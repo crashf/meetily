@@ -57,6 +57,16 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
+      # Pund-IT fork: map code-signing secret presence to env flags — the `secrets`
+      # context is unavailable in step-level `if:` conditions, so all later guards
+      # test these flags instead. Upstream (all secrets set) = same behavior as before.
+      - name: Detect signing secrets
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.APPLE_CERTIFICATE }}" ]; then echo "HAS_APPLE_CERT=true" >> "$GITHUB_ENV"; else echo "HAS_APPLE_CERT=false" >> "$GITHUB_ENV"; fi
+          if [ -n "${{ secrets.SM_HOST }}" ]; then echo "HAS_DIGICERT=true" >> "$GITHUB_ENV"; else echo "HAS_DIGICERT=false" >> "$GITHUB_ENV"; fi
+          if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then echo "HAS_UPDATER_KEY=true" >> "$GITHUB_ENV"; else echo "HAS_UPDATER_KEY=false" >> "$GITHUB_ENV"; fi
+
       - name: Get version from tauri.conf.json.
         id: get-version
         shell: bash
@@ -267,7 +277,7 @@ jobs:
           Get-ChildItem $runtimeDir -ErrorAction SilentlyContinue
 
       - name: Setup DigiCert Environment
-        if: contains(inputs.platform, 'windows') && inputs.sign-binaries
+        if: contains(inputs.platform, 'windows') && inputs.sign-binaries && env.HAS_DIGICERT == 'true'
         shell: pwsh
         run: |
           # Set environment variables
@@ -310,11 +320,11 @@ jobs:
           "SM_CLIENT_CERT_FILE=D:\Certificate_pkcs12.p12" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup DigiCert KeyLocker
-        if: contains(inputs.platform, 'windows') && inputs.sign-binaries
+        if: contains(inputs.platform, 'windows') && inputs.sign-binaries && env.HAS_DIGICERT == 'true'
         uses: digicert/ssm-code-signing@v1.1.1
 
       - name: Sync Certificate to Windows Certificate Store
-        if: contains(inputs.platform, 'windows') && inputs.sign-binaries
+        if: contains(inputs.platform, 'windows') && inputs.sign-binaries && env.HAS_DIGICERT == 'true'
         shell: pwsh
         run: |
           Write-Host "============================================================"
@@ -394,7 +404,7 @@ jobs:
           Write-Host ""
 
       - name: Verify DigiCert Setup
-        if: contains(inputs.platform, 'windows') && inputs.sign-binaries
+        if: contains(inputs.platform, 'windows') && inputs.sign-binaries && env.HAS_DIGICERT == 'true'
         shell: pwsh
         run: |
           Write-Host "=== DigiCert Setup Verification ==="
@@ -466,7 +476,11 @@ jobs:
         run: rustup target add ${{ inputs.target }}
 
       - name: Import Apple Developer Certificate
-        if: contains(inputs.platform, 'macos') && inputs.sign-binaries
+        # Pund-IT fork: fork has no Apple Developer cert configured; the import
+        # hard-fails on empty secrets (SecKeychainItemImport), killing the build
+        # before compilation. The empty-secret guard lets unsigned (ad-hoc
+        # signingIdentity "-" per tauri.conf.json) macOS builds proceed.
+        if: contains(inputs.platform, 'macos') && inputs.sign-binaries && env.HAS_APPLE_CERT == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -482,7 +496,7 @@ jobs:
           security find-identity -v -p codesigning build.keychain
 
       - name: Verify certificate
-        if: contains(inputs.platform, 'macos') && inputs.sign-binaries
+        if: contains(inputs.platform, 'macos') && inputs.sign-binaries && env.HAS_APPLE_CERT == 'true'
         run: |
           CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
           CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
@@ -601,6 +615,16 @@ jobs:
           key: ${{ runner.os }}-onnxruntime-${{ inputs.target }}-${{ hashFiles('frontend/src-tauri/build/onnxruntime.rs') }}
 
 
+      - name: Fork unsigned mode (skip updater artifacts when no key)
+        # Pund-IT fork: without TAURI_SIGNING_PRIVATE_KEY, updater-artifact
+        # signing fails AFTER the full compile. Upstream (key configured)
+        # gets an empty output here and the args line is unchanged.
+        id: unsigned-args
+        if: inputs.sign-binaries && env.HAS_UPDATER_KEY != 'true'
+        shell: bash
+        run: |
+          echo 'args=--config {"bundle":{"createUpdaterArtifacts":false}}' >> "$GITHUB_OUTPUT"
+
       - name: Build with Tauri
         id: tauri-build
         uses: tauri-apps/tauri-action@v0
@@ -626,7 +650,7 @@ jobs:
           tagName: ${{ inputs.release-id && format('v{0}', steps.get-version.outputs.version) || '' }}
           releaseName: ${{ inputs.release-id && format('v{0}', steps.get-version.outputs.version) || '' }}
           releaseId: ${{ inputs.release-id }}
-          args: ${{ inputs.build-args }} ${{ steps.build-features.outputs.features }} ${{ steps.windows-portability.outputs.args }}
+          args: ${{ inputs.build-args }} ${{ steps.build-features.outputs.features }} ${{ steps.windows-portability.outputs.args }} ${{ steps.unsigned-args.outputs.args }}
 
       - name: Upload artifacts (macOS)
         if: inputs.upload-artifacts && contains(inputs.platform, 'macos')
