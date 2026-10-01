@@ -38,6 +38,7 @@ pub(crate) use perf_trace;
 pub mod analytics;
 pub mod api;
 pub mod audio;
+pub mod auto_record;
 pub mod config;
 pub mod console_utils;
 pub mod database;
@@ -506,6 +507,9 @@ pub fn run() {
 
             log::info!("Application setup complete");
 
+            // Pund-IT fork: browser-trigger auto-record (watchdog/trigger-server + audio gate)
+            auto_record::spawn_services(_app.handle().clone());
+
             // Initialize system tray
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
@@ -610,6 +614,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            auto_record::auto_record_get_status,
+            auto_record::auto_record_set_config,
             start_recording,
             stop_recording,
             is_recording,

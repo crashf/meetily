@@ -266,6 +266,17 @@ fn resolve_system_or_default(requested_name: Option<&str>) -> Option<Arc<super::
     }
 }
 
+// --- Pund-IT fork additions (browser-trigger auto-record): thin pub wrappers
+// around the private resolvers so the auto_record gate can reuse identical
+// device-selection behavior (preferred-device prefs, WASAPI host selection).
+pub fn resolve_default_mic() -> Option<Arc<super::AudioDevice>> {
+    default_input_device().ok().map(Arc::new)
+}
+
+pub fn resolve_default_system() -> Option<Arc<super::AudioDevice>> {
+    resolve_system_or_default(None)
+}
+
 /// Wake idle audio hardware before checking microphone callbacks, and finish
 /// validation before creating any recording resources.
 #[cfg(target_os = "macos")]

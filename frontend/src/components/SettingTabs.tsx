@@ -2,6 +2,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ModelConfig, ModelSettingsModal } from "./ModelSettingsModal"
 import { TranscriptModelProps, TranscriptSettings } from "./TranscriptSettings"
 import { RecordingSettings, RecordingPreferences } from "./RecordingSettings"
+import { AutoRecordSettings } from "./AutoRecordSettings"
 import { About } from "./About";
 
 interface SettingTabsProps {
@@ -55,6 +56,7 @@ onSave={onSave}
   </TabsContent>
   <TabsContent value="recordingSettings">
     <RecordingSettings />
+    <AutoRecordSettings />
   </TabsContent>
   <TabsContent value="about">
     <About />
