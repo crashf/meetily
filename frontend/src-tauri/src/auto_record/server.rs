@@ -5,7 +5,6 @@
 use super::{emit_event, load_config, now_ms, SessionMeta, STATE};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tauri::{AppHandle, Runtime};
@@ -22,6 +21,7 @@ pub struct TriggerRequest {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)] // kept: shape for future JSON responses; ok_json/err_json build equivalent maps today
 struct ApiResponse {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -191,7 +191,7 @@ async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (
                 }
                 Err(e) => {
                     error!("auto-record: start failed: {}", e);
-                    if let Some(mut s) = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    if let Some(s) = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).take() {
                         emit_event(
                             &app,
                             "auto-record-error",

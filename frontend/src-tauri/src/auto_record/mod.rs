@@ -136,10 +136,8 @@ pub async fn save_config<R: Runtime>(app: &AppHandle<R>, cfg: &AutoRecordConfig)
         log::error!("auto-record store unavailable; config not saved");
         return;
     };
-    if let Err(e) = store.set("config", serde_json::to_value(cfg).unwrap_or_default()) {
-        log::error!("auto-record config save failed: {}", e);
-        return;
-    }
+    // NOTE: store.set() returns () in tauri-plugin-store 2.x; store.save() is the fallible flush.
+    store.set("config", serde_json::to_value(cfg).unwrap_or_default());
     if let Err(e) = store.save() {
         log::error!("auto-record store flush failed: {}", e);
     }

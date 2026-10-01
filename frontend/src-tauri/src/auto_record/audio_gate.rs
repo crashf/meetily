@@ -35,7 +35,12 @@ fn cpal_config(sample_rate: u32, channels: u16) -> cpal::StreamConfig {
 
 /// Long-lived OS thread owning the non-Send cpal stream.
 struct ProbeThread {
+    #[allow(dead_code)] // retained for diagnostics/restart bookkeeping
     source: &'static str,
+    // Lifetime contract: run() holds the ProbeThread bindings for the process
+    // lifetime, so stop_tx is never *sent to*; dropping it (process exit or a
+    // future restart path) closes the channel and the worker breaks out.
+    #[allow(dead_code)]
     stop_tx: std::sync::mpsc::Sender<bool>,
 }
 
@@ -59,7 +64,7 @@ impl ProbeThread {
     ) {
         loop {
             match Self::open_stream(&app, source, out.clone()) {
-                Ok(stream) => {
+                Ok(_stream) => {
                     log::info!("auto-record gate: {} stream started", source);
                     // Park until a stop request or channel close; dropping `stream` stops capture.
                     match stop_rx.recv() {
@@ -82,7 +87,7 @@ impl ProbeThread {
     }
 
     fn open_stream<R: Runtime>(
-        app: &AppHandle<R>,
+        _app: &AppHandle<R>, // reserved: future config/permission plumbing
         source: &'static str,
         out: UnboundedSender<LevelEvent>,
     ) -> anyhow::Result<cpal::Stream> {
@@ -105,15 +110,13 @@ impl ProbeThread {
             source, audio_device.name, sample_rate, channels, format
         );
 
-        let sender = out.clone();
-        let cb_rms = move |data: &[f32]| send_rms(&sender, source, data, channels);
         let stream = match format {
             cpal::SampleFormat::F32 => {
                 let sender = out.clone();
                 cpal_device.build_input_stream(
                     &cpal_config(sample_rate, channels),
                     move |data: &[f32], _: &cpal::InputCallbackInfo| send_rms(&sender, source, data, channels),
-                    |err| log::debug!("auto-record gate: {} stream error: {}", source, err),
+                    move |err| log::debug!("auto-record gate: {} stream error: {}", source, err),
                     None,
                 )?
             }
@@ -123,9 +126,9 @@ impl ProbeThread {
                     &cpal_config(sample_rate, channels),
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         let f32_data: Vec<f32> = data.iter().map(|&s| s.to_sample()).collect();
-                        cb_rms(&f32_data);
+                        send_rms(&sender, source, &f32_data, channels);
                     },
-                    |err| log::debug!("auto-record gate: {} stream error: {}", source, err),
+                    move |err| log::debug!("auto-record gate: {} stream error: {}", source, err),
                     None,
                 )?
             }
@@ -137,7 +140,7 @@ impl ProbeThread {
                         let f32_data: Vec<f32> = data.iter().map(|&s| s.to_sample()).collect();
                         send_rms(&sender, source, &f32_data, channels);
                     },
-                    |err| log::debug!("auto-record gate: {} stream error: {}", source, err),
+                    move |err| log::debug!("auto-record gate: {} stream error: {}", source, err),
                     None,
                 )?
             }
