@@ -218,3 +218,57 @@ pub fn spawn_services<R: Runtime + 'static>(app: AppHandle<R>) {
         watchdog::heartbeat_monitor(app_hb).await;
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_sane() {
+        let c = AutoRecordConfig::default();
+        assert!(c.enabled, "auto-record should default to enabled");
+        assert_eq!(c.mode, "hybrid");
+        assert_eq!(c.port, DEFAULT_PORT);
+        assert!(c.token.is_empty(), "token generated later, not in Default");
+        assert!(c.speech_threshold > 0.0 && c.speech_threshold < 1.0);
+        assert!(c.auto_start_enabled);
+    }
+
+    #[test]
+    fn partial_stored_config_fills_defaults() {
+        // Simulates an older store file missing newer fields.
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"enabled": false, "mode": "extension"}"#).unwrap();
+        let c: AutoRecordConfig = serde_json::from_value(v).expect("partial config must parse");
+        assert!(!c.enabled);
+        assert_eq!(c.mode, "extension");
+        assert_eq!(c.port, DEFAULT_PORT);
+        assert_eq!(c.speech_threshold, 0.06);
+    }
+
+    #[test]
+    fn ensure_token_is_hex_and_stable() {
+        let mut c = AutoRecordConfig::default();
+        assert!(c.token.is_empty());
+        c.ensure_token();
+        assert_eq!(c.token.len(), 32);
+        assert!(c.token.chars().all(|ch| ch.is_ascii_hexdigit()));
+        let first = c.token.clone();
+        c.ensure_token();
+        assert_eq!(c.token, first, "ensure_token must not regenerate");
+    }
+
+    #[test]
+    fn full_config_roundtrip() {
+        let mut c = AutoRecordConfig {
+            speech_threshold: 0.11,
+            ..Default::default()
+        };
+        c.ensure_token();
+        let v = serde_json::to_value(&c).unwrap();
+        let c2: AutoRecordConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(c2.speech_threshold, 0.11);
+        assert_eq!(c2.token, c.token);
+        assert_eq!(c2.port, c.port);
+    }
+}
