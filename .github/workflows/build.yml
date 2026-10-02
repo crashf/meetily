@@ -626,6 +626,11 @@ jobs:
           echo 'args=--config {"bundle":{"createUpdaterArtifacts":false}}' >> "$GITHUB_OUTPUT"
 
       - name: Build with Tauri
+        # Pund-IT fork: on macOS without APPLE_CERTIFICATE, tauri-bundler still
+        # sees the empty-string APPLE_CERTIFICATE env and attempts a keychain
+        # import that fails. Fork-macOS builds via the "fork unsigned macOS"
+        # step below instead (no APPLE_* env => clean ad-hoc signingIdentity "-").
+        if: ${{ !(contains(inputs.platform, 'macos') && env.HAS_APPLE_CERT != 'true') }}
         id: tauri-build
         uses: tauri-apps/tauri-action@v0
         env:
@@ -651,6 +656,18 @@ jobs:
           releaseName: ${{ inputs.release-id && format('v{0}', steps.get-version.outputs.version) || '' }}
           releaseId: ${{ inputs.release-id }}
           args: ${{ inputs.build-args }} ${{ steps.build-features.outputs.features }} ${{ steps.windows-portability.outputs.args }} ${{ steps.unsigned-args.outputs.args }}
+
+      - name: Fork unsigned macOS build
+        # Fork-macOS: direct Tauri CLI invocation with NO APPLE_* env vars in
+        # scope, so tauri-bundler falls back to ad-hoc signing (identity "-"
+        # from tauri.conf.json). Skipped upstream where a cert IS configured.
+        if: contains(inputs.platform, 'macos') && env.HAS_APPLE_CERT != 'true'
+        shell: bash
+        run: |
+          cd frontend
+          BUILD_ARGS="${{ inputs.build-args }} ${{ steps.build-features.outputs.features }} ${{ steps.unsigned-args.outputs.args }}"
+          echo "Building macOS (unsigned/ad-hoc) with args: $BUILD_ARGS"
+          pnpm tauri build $BUILD_ARGS
 
       - name: Upload artifacts (macOS)
         if: inputs.upload-artifacts && contains(inputs.platform, 'macos')
