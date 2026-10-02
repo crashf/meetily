@@ -324,7 +324,10 @@ async fn handle_connection<R: Runtime>(app: AppHandle<R>, mut stream: TcpStream)
                 Err(e) => respond(&mut stream, 400, &err_json(e)).await,
             }
         }
-        ("POST", "/heartbeat") => {
+        ("GET" | "POST", "/heartbeat") => {
+            // Worker has sent GET since v1.1 (no body); POST accepted too. The old
+            // POST-only route 404'd every extension heartbeat — the extension
+            // deadman never armed (PUN-801 log-6: 'alarm heartbeat failed: 404').
             let ts = now_ms();
             STATE.heartbeat.store(ts, Ordering::SeqCst);
             if let Some(session) = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {

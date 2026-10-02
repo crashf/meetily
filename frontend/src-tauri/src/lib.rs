@@ -465,6 +465,19 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_notification::init())
+        // Register the log plugin: the recording engine's errors (which can force-stop
+        // a recording self-silently via the error budget in recording_state.rs) went
+        // to a logger that was NEVER registered — invisible by construction. With a
+        // file target they land in the app LogDir for post-mortems (PUN-801 log-6).
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout))
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir { file_name: Some("meetily".into()) },
+                ))
+                .build(),
+        )
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

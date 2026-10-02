@@ -515,6 +515,27 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     const res = await callServer('/heartbeat');
     if (!res.ok) dbg(`alarm heartbeat failed: status=${res.status}`);
   }
+  // Resurrect: if any tab sits in a live meeting but the app reports NOT recording
+  // (engine self-stop, error budget, crash) — restart the recording. Field log 6:
+  // recording silently went false 16s in; nothing told the worker.
+  if (meetingAny() && !(await chrome.storage.session.get({ resurrectArmed: false })).resurrectArmed) {
+    await chrome.storage.session.set({ resurrectArmed: true });
+    try {
+      const ping = await callServer('/ping');
+      // Only resurrect when the server is up, answering, and NOT recording.
+      if (ping.ok && ping.json?.recording === false) {
+        const t = [...tabSensors.entries()].find(([, v]) => v.inMeeting);
+        if (t) {
+          dbg(`[tab ${t[0]}] in-meeting but app reports recording=false -> RESURRECT`);
+          await startMeeting(tabInfo(t[1]));
+        }
+      }
+    } catch (e) {
+      dbg(`resurrect check failed: ${e}`);
+    } finally {
+      setTimeout(() => chrome.storage.session.set({ resurrectArmed: false }).catch(() => {}), 30000);
+    }
+  }
 });
 
 // ---- action context menu (force start/stop) ----------------------------------

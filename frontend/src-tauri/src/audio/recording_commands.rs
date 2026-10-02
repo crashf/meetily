@@ -405,10 +405,25 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     });
     manager.set_meeting_name(Some(effective_meeting_name));
 
-    // Set up error callback
+    // Set up error callback — mirror into the auto-record debug ring + notify so a
+    // recording-engine failure is VISIBLE where auto-record is debugged (the pane
+    // only shows debug_log entries; engine errors were invisible before).
     let app_for_error = app.clone();
     manager.set_error_callback(move |error| {
         let _ = app_for_error.emit("recording-error", error.user_message());
+        crate::auto_record::debug::debug_log(
+            &app_for_error,
+            "audio-engine",
+            "error",
+            format!("recording engine error: {}", error.user_message()),
+        );
+        crate::auto_record::notify::notify_throttled(
+            &app_for_error,
+            "engine-error",
+            60_000,
+            "Recording engine error",
+            &error.user_message(),
+        );
     });
 
     // Start recording with resolved devices (replaces start_recording_with_defaults_and_auto_save call)
@@ -592,10 +607,24 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     });
     manager.set_meeting_name(Some(effective_meeting_name));
 
-    // Set up error callback
+    // Set up error callback — mirror into the auto-record debug ring + notify so a
+    // recording-engine failure is VISIBLE where auto-record is debugged.
     let app_for_error = app.clone();
     manager.set_error_callback(move |error| {
         let _ = app_for_error.emit("recording-error", error.user_message());
+        crate::auto_record::debug::debug_log(
+            &app_for_error,
+            "audio-engine",
+            "error",
+            format!("recording engine error: {}", error.user_message()),
+        );
+        crate::auto_record::notify::notify_throttled(
+            &app_for_error,
+            "engine-error",
+            60_000,
+            "Recording engine error",
+            &error.user_message(),
+        );
     });
 
     // Start recording with specified devices and auto_save setting
