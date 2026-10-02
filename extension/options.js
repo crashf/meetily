@@ -3,12 +3,13 @@ const $ = (id) => document.getElementById(id);
 const stamp = (ms) => new Date(ms).toISOString().slice(11, 23);
 
 async function restore() {
-  const { port = 7788, token = '', debugMode = false, notify = true } =
-    await chrome.storage.local.get(['port', 'token', 'debugMode', 'notify']);
+  const { port = 7788, token = '', debugMode = false, notify = true, forceEnabled = false } =
+    await chrome.storage.local.get(['port', 'token', 'debugMode', 'notify', 'forceEnabled']);
   $('port').value = port;
   $('token').value = token;
   $('debug').checked = !!debugMode;
   $('notify').checked = notify !== false; // default on
+  $('force').checked = !!forceEnabled;
   if (debugMode || location.search.includes('debug=1')) $('logwrap').classList.add('show');
   refreshLog();
 }
@@ -48,6 +49,27 @@ $('notify').addEventListener('change', async () => {
   }
 });
 
+// Force trigger: meeting-URL alone counts as in-call (DOM-free, audio-free).
+// For when detection selectors rot or Meet changes its render split.
+$('force').addEventListener('change', async () => {
+  await chrome.storage.local.set({ forceEnabled: $('force').checked });
+  $('status').innerHTML = $('force').checked
+    ? '<span class="ok">Force trigger ON — recording starts when a meeting URL is open (no UI checks).</span>'
+    : 'Force trigger off — normal detection.';
+});
+
+// Manual start/stop: records immediately regardless of detection state.
+$('forceStart').addEventListener('click', async () => {
+  const res = await chrome.runtime.sendMessage({ kind: 'FORCE_START' });
+  $('status').innerHTML = res?.ok && res.json?.ok
+    ? '<span class="ok">✓ Recording started (manual)</span>'
+    : `<span class="bad">✗ Start failed: ${res?.error || res?.json?.error || 'see app notification'}</span>`;
+});
+$('forceStop').addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ kind: 'FORCE_STOP' });
+  $('status').textContent = 'Stopped.';
+});
+
 $('test').addEventListener('click', async () => {
   const port = Number($('port').value) || 7788;
   const token = $('token').value.trim();
@@ -75,11 +97,13 @@ let lastSnapshot = '';
 function render(found) {
   const lines = [];
   for (const tab of found || []) {
-    lines.push(`── tab ${tab.tabId} · ${tab.url?.slice(0, 100) || '?'} · state=${tab.state}`);
-    lines.push(...(tab.log || []).slice(-60));
+    lines.push(`── tab ${tab.tabId} f${tab.frameId} · ${tab.url?.slice(0, 100) || '?'} ${tab.signals?.isTop !== undefined ? (tab.signals.isTop ? '(top)' : '(sub)') : ''}`);
+    lines.push(...(tab.log || []).slice(-40));
+    const s = tab.signals;
+    if (s) lines.push(`   SIGNALS: pathOk=${s.pathOk} leave=${s.joined} media=${s.media} lobby=${s.lobby}`);
     const c = tab.census;
     if (c) {
-      lines.push(`   CENSUS: buttons=${c.visibleButtons}/${c.buttons} videos=${JSON.stringify(c.videos)} iframes=${c.iframes.length}`);
+      lines.push(`   CENSUS: buttons=${c.visibleButtons}/${c.buttons} videos=${JSON.stringify(c.videos)} iframes=${c.iframes?.length ?? 0}`);
       lines.push(`   labels: ${c.labels.slice(0, 12).join(' | ') || '(none)'}`);
       lines.push(`   data-attrs: ${c.dataAttrs.join(', ') || '(none)'}`);
       if (c.iframes.length) lines.push(`   iframe srcs: ${c.iframes.join(' ; ') || '(none)'}`);
@@ -94,13 +118,17 @@ async function refreshLog() {
     const found = await chrome.runtime.sendMessage({ kind: 'COLLECT_TAB_DEBUG' });
     const workerLines = (view?.workerLog || []).map((l) => '· ' + l);
     const tabsText = (view?.tabs || [])
-      .map((t) => `· [tab ${t.id}] inMeeting=${t.inMeeting} platform=${t.platform} beat=${t.lastBeat ? stamp(t.lastBeat) : '—'}`)
+      .map((t) => {
+        const fr = (t.frames || []).map((f) => `f${f.frameId}:leave=${f.joined ? 1 : 0},media=${f.media ? 1 : 0},lobby=${f.lobby ? 1 : 0}`).join(' ');
+        return `· [tab ${t.id}] inMeeting=${t.inMeeting} meetingUrl=${t.meetingUrl} platform=${t.platform} frames=[${fr || '—'}]`;
+      })
       .join('\n') || '· (no tracked tabs)';
     const ping = view?.ping
       ? `· ping: ${view.ping.ok ? `up (recording=${view.ping.recording})` : `down status=${view.ping.status} ${view.ping.error || ''}`}`
       : '· ping: (not configured)';
+    const forced = view?.forced ? '· FORCED RECORDING ACTIVE' : '';
     const text =
-      `== worker ==\n${ping}\n${tabsText}\n${workerLines.join('\n')}\n\n== meeting tabs ==\n${render(found)}`;
+      `== worker ==\n${ping}\n${forced}\n${tabsText}\n${workerLines.join('\n')}\n\n== meeting tabs (per frame) ==\n${render(found)}`;
     if (text !== lastSnapshot) {
       $('log').textContent = text;
       lastSnapshot = text;
@@ -129,7 +157,7 @@ $('probe').addEventListener('click', async () => {
     const view = await chrome.runtime.sendMessage({ kind: 'GET_DEBUG_VIEW' });
     const workerLines = (view?.workerLog || []).map((l) => '· ' + l);
     const text =
-      `== worker ==\n${workerLines.join('\n')}\n\n== meeting tabs (fresh probe) ==\n${render(found)}`;
+      `== worker ==\n${workerLines.join('\n')}\n\n== meeting tabs (fresh probe, per frame) ==\n${render(found)}`;
     $('log').textContent = text;
     lastSnapshot = text;
   } catch (e) {

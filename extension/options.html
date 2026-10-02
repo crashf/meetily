@@ -45,6 +45,14 @@
     <label for="debug">Debug mode (verbose logging below + console output)</label>
   </div>
 
+  <div class="toggle">
+    <input id="force" type="checkbox" />
+    <label for="force">Force trigger on meeting URL only (no UI checks — use if detection fails)</label>
+  </div>
+
+  <button id="forceStart">Start recording now (manual)</button>
+  <button id="forceStop">Stop recording (manual)</button>
+
   <button id="copyLog">Copy debug log</button>
   <button id="probe">Probe meeting tab now</button>
   <div id="logwrap">

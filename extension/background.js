@@ -1,9 +1,20 @@
 // Meetily Auto-Record — MV3 service worker.
 // Owns meeting state across tabs, talks to the local Meetily trigger server, alarms keep-alive.
-// v1.1 (PUN-801): notifications on detect/start/stop/error, persistent debug ring,
-// session-persisted tab state (MV3 cold starts), wider Teams-domain matching.
+// v1.3 (PUN-801): SENSOR architecture. Content scripts no longer run detection state
+// machines — every frame (top AND subframes) beams raw signals every 2s; the worker
+// merges them per tab and decides join/leave. Fixes the split-frame case where Meet's
+// video/controls render in a subframe whose URL fails the meeting-path test (top frame
+// had the URL but no UI, subframe had the UI but no meeting URL — neither could fire).
+// Also adds: frame-routed debug/census collection, force-start (context menu +
+// options toggle) as a DOM-free, audio-free trigger, and heartbeat ownership.
 const DEFAULT_PORT = 7788;
-const HEARTBEAT_MS = 15000;
+const JOIN_CONFIRM_MS = 3000;    // merged meeting-ish signals must persist this long
+const LEAVE_DEBOUNCE_MS = 8000;  // all-fresh-frames-dark before stopping
+const FRAME_STALE_MS = 70000;    // frame beacon older than this = frame gone/throttled
+const GONE_SILENCE_MS = 240000;  // no beacon at all from an in-meeting tab => left
+                                 // (tab throttling can slow beacons to ~60s; this must
+                                 // also land before the app's 5-min heartbeat deadman)
+const HEARTBEAT_SEND_MS = 12000; // worker-side heartbeat throttle
 const ALARM_HEARTBEAT = 'meetily-hb';
 const DOMAIN_RE =
   /(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|teams\.cloud\.microsoft|m365\.cloud\.microsoft|([a-z0-9-]+\.)*zoom\.us)$/i;
@@ -16,8 +27,6 @@ async function getConfig() {
 
 // ---- debug ring (service-worker side) --------------------------------------
 // Kept in chrome.storage.session so it survives MV3 worker restarts.
-// Entries come from the worker itself (state machine, transport) and from
-// content scripts (DEBUG_TICK). Viewed via the options page (GET_DEBUG_VIEW).
 const DEBUG_CAP = 250;
 function dbg(m) {
   const line = `${new Date().toISOString().slice(11, 23)} ${m}`;
@@ -80,25 +89,58 @@ async function callServer(path, body) {
   }
 }
 
-// ---- state machine ---------------------------------------------------------
-// tabId -> { inMeeting, platform, meetingName, lastBeat }. Worker decides global meeting
-// state: any tab in-meeting => meeting active; last tab leaves => stop.
-// NOTE: persisted to storage.session — MV3 workers cold-start mid-meeting and would
-// otherwise forget the meeting (heartbeats stop, the app's 5-min deadman kills the
-// recording even though the meeting is live).
-const tabs = new Map();
-
-function persistTabs() {
-  chrome.storage.session.set({ tabsState: [...tabs.entries()] }).catch(() => {});
+// ---- meeting-URL parsing (worker copy of content-script rules) ---------------
+function parseMeetingUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'meet.google.com') {
+      return /^[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3,5}(\/|$)/i.test(u.pathname);
+    }
+    if (/(^|\.)(teams\.microsoft\.com|teams\.live\.com|teams\.cloud\.microsoft|m365\.cloud\.microsoft)$/i.test(u.hostname)) {
+      return /(\/meeting[^\/]*|\/call|[#&?]conversation=)/i.test(u.href);
+    }
+    if (u.hostname.endsWith('zoom.us')) return /\/wc\/|\/j\//i.test(u.pathname);
+  } catch (_) { /* not a URL */ }
+  return false;
 }
+
+// ---- per-tab merged sensor state --------------------------------------------
+// tabId -> { url, meetingUrl, platform, meetingName, frames: Map<frameId, sig>,
+//            meetingSince, inMeeting, offSince, lastBeacon }
+const tabSensors = new Map();
+let forceEnabled = false;  // options toggle: meeting-URL alone counts as in-call
+let forcedActive = false;  // context-menu force: recording without any detection
+let lastHbSent = 0;
+
+function tabInfo(t) {
+  return { platform: t.platform || 'unknown', meetingName: t.meetingName || 'Auto-recorded meeting' };
+}
+function meetingAny(exceptTabId = null) {
+  return [...tabSensors.entries()].some(([id, t]) => id !== exceptTabId && t.inMeeting);
+}
+
+async function persistTabs() {
+  const flat = [...tabSensors.entries()].map(([id, t]) => [
+    Number(id),
+    {
+      url: t.url, meetingUrl: t.meetingUrl, platform: t.platform, meetingName: t.meetingName,
+      meetingSince: t.meetingSince, inMeeting: t.inMeeting, offSince: t.offSince,
+      lastBeacon: t.lastBeacon, frames: undefined,
+    },
+  ]);
+  chrome.storage.session.set({ tabsState: flat }).catch(() => {});
+}
+
 async function restoreTabs() {
   try {
     const { tabsState = [] } = await chrome.storage.session.get({ tabsState: [] });
-    for (const [id, v] of tabsState) tabs.set(Number(id), v);
-    if (tabs.size > 0) {
-      dbg(`restored ${tabs.size} tracked tab(s) after worker restart`);
-      const any = meetingState().any;
-      if (any) {
+    for (const [id, v] of tabsState) {
+      const t = { ...v, frames: new Map() };
+      tabSensors.set(Number(id), t);
+    }
+    if (tabSensors.size > 0) {
+      dbg(`restored ${tabSensors.size} tracked tab(s) after worker restart`);
+      if (meetingAny()) {
         setBadge('REC', '#188038');
         scheduleHeartbeat();
       }
@@ -106,16 +148,93 @@ async function restoreTabs() {
   } catch (_) { /* fresh worker */ }
 }
 
-function meetingState() {
-  const inMeeting = [...tabs.entries()].filter(([, v]) => v.inMeeting);
-  if (inMeeting.length === 0) return { any: false };
-  const [tabId, info] = inMeeting[0];
-  return { any: true, tabId, info };
+// Recompute one tab's merged state from its live frame signals. All join/leave
+// decisions live here; content scripts only report raw per-frame observations.
+async function recomputeTab(tabId, t) {
+  const now = Date.now();
+  // Drop frames that stopped beaming (closed iframe, navigated subframe, or a
+  // background-throttled tab — beacons can slow to ~60s, hence the 70s threshold).
+  for (const [fid, s] of [...t.frames.entries()]) {
+    if (now - s.at > FRAME_STALE_MS) t.frames.delete(fid);
+  }
+  const sigs = [...t.frames.values()];
+  if (!sigs.length) {
+    // No live frames: tab navigated off-domain or was discarded.
+    if (t.inMeeting) {
+      dbg(`[tab ${tabId}] all detection frames gone -> LEAVE`);
+      t.inMeeting = false;
+      await persistTabs();
+      if (!meetingAny() && !forcedActive) await stopMeeting('Detection frames gone');
+    }
+    tabSensors.delete(tabId);
+    await persistTabs();
+    return;
+  }
+
+  const anyJoined = sigs.some((s) => s.joined);
+  const anyMediaNoLobby = sigs.some((s) => s.media && !s.lobby);
+  const meetingish = t.meetingUrl && (anyJoined || anyMediaNoLobby || forceEnabled);
+
+  if (t.inMeeting) {
+    // Server heartbeat flows from the 15s alarm (recompute runs every 2s per
+    // beacon — calling the server from here would spam it 30x more often).
+  } else if (meetingish) {
+    if (!t.meetingSince) t.meetingSince = now;
+    if (now - t.meetingSince > JOIN_CONFIRM_MS) {
+      t.inMeeting = true;
+      dbg(`[tab ${tabId}] JOIN confirmed (url=${t.meetingUrl} leaveBtn=${anyJoined} mediaNoLobby=${anyMediaNoLobby}${forceEnabled ? ' +forceBypass' : ''})`);
+      await persistTabs();
+      notify('Meeting detected', `${tabInfo(t).meetingName} on ${t.platform || 'meeting'} — starting auto-record.`);
+      if (!meetingAny(tabId)) await startMeeting(tabInfo(t));
+      setBadge('REC', '#188038');
+      scheduleHeartbeat();
+    } else {
+      if (!t.joinLogged) { dbg(`[tab ${tabId}] meeting-ish signal seen, confirming in ${JOIN_CONFIRM_MS}ms`); t.joinLogged = true; }
+    }
+  } else {
+    t.meetingSince = 0;
+    t.joinLogged = false;
+    if (t.inMeeting) {
+      if (!t.offSince) {
+        t.offSince = now;
+        dbg(`[tab ${tabId}] detection went dark, ${LEAVE_DEBOUNCE_MS / 1000}s leave debounce started`);
+      } else if (now - t.offSince > LEAVE_DEBOUNCE_MS) {
+        t.inMeeting = false;
+        t.offSince = 0;
+        dbg(`[tab ${tabId}] LEAVE after ${LEAVE_DEBOUNCE_MS / 1000}s dark`);
+        await persistTabs();
+        if (!meetingAny() && !forcedActive) await stopMeeting('Left meeting');
+      }
+    }
+  }
 }
 
-async function tokenReady() {
-  const { token } = await getConfig();
-  return Boolean(token);
+async function handleSensor(msg, sender) {
+  const tabId = sender.tab?.id;
+  if (tabId == null) return;
+  const frameId = sender.frameId ?? 0;
+  let t = tabSensors.get(tabId);
+  if (!t) {
+    t = { url: '', meetingUrl: false, platform: msg.platform, meetingName: '', frames: new Map(), meetingSince: 0, inMeeting: false, offSince: 0, lastBeacon: 0 };
+    tabSensors.set(tabId, t);
+  }
+  const isTop = !!msg.isTop;
+  if (isTop) {
+    if (msg.url && msg.url !== t.url) {
+      dbg(`[tab ${tabId}] top-frame url :: ${msg.url.slice(0, 100)}`);
+      t.url = msg.url;
+      t.meetingUrl = parseMeetingUrl(msg.url);
+      t.joinLogged = false;
+      t.meetingSince = t.meetingUrl ? t.meetingSince : 0;
+    }
+    t.platform = msg.platform || t.platform;
+    t.meetingName = msg.meetingName || t.meetingName;
+  }
+  t.frames.set(frameId, {
+    joined: !!msg.joined, media: !!msg.media, lobby: !!msg.lobby, pathOk: !!msg.pathOk, at: Date.now(),
+  });
+  t.lastBeacon = Date.now();
+  await recomputeTab(tabId, t);
 }
 
 async function startMeeting(info) {
@@ -172,6 +291,27 @@ async function stopMeeting(reason = '') {
   return res;
 }
 
+// ---- force start (audio-free, DOM-free trigger) ------------------------------
+// Right-click the extension icon → "Force start recording now", or the options
+// page button. Records until force-stop / browser close; deliberately dumb.
+async function forceStart() {
+  const liveTab = [...tabSensors.values()].find((t) => t.meetingUrl);
+  const info = {
+    platform: liveTab?.platform || 'manual',
+    meetingName: liveTab?.meetingName || 'Forced recording (manual)',
+  };
+  dbg(`FORCE START (${info.platform} / "${info.meetingName}")`);
+  forcedActive = true;
+  const res = await startMeeting(info);
+  if (res.ok) setBadge('REC', '#188038');
+  return res;
+}
+async function forceStop() {
+  dbg('FORCE STOP');
+  forcedActive = false;
+  await stopMeeting('Manual stop (forced)');
+}
+
 // ---- meetily ping (options page / badge status) -----------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.kind === 'GET_STATUS') {
@@ -184,14 +324,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // async sendResponse
   }
   if (msg.kind === 'GET_TAB_STATE') {
-    sendResponse({ tabInMeeting: tabs.get(sender.tab?.id)?.inMeeting ?? false });
+    const t = tabSensors.get(sender.tab?.id);
+    sendResponse({ tabInMeeting: t?.inMeeting ?? false });
   }
   if (msg.kind === 'CONFIGURED') {
     setBadge('');
   }
+  if (msg.kind === 'FORCE_START') {
+    forceStart().then(sendResponse);
+    return true;
+  }
+  if (msg.kind === 'FORCE_STOP') {
+    forceStop().then(sendResponse);
+    return true;
+  }
+  return false;
 });
 
-// ---- debug views (options page) ---------------------------------------------
+// ---- debug / census views (options page) — FRAME-ROUTED ----------------------
+// all_frames content scripts mean several frames answer per tab; only one response
+// wins without frame routing (a UI-less subframe used to mask the meeting frame's
+// truth). Collect from every frame via webNavigation.getAllFrames.
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.kind === 'GET_DEBUG_VIEW') {
     (async () => {
@@ -202,9 +355,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         ping = { ok: p.ok, status: p.status, recording: p.json?.recording ?? null, error: p.error ?? null };
       }
       sendResponse({
-        config: { port, tokenSet: Boolean(token), debugMode },
+        config: { port, tokenSet: Boolean(token), debugMode, forceEnabled },
         ping,
-        tabs: [...tabs.entries()].map(([id, v]) => ({ id, ...v })),
+        tabs: [...tabSensors.entries()].map(([id, t]) => ({
+          id,
+          url: t.url,
+          meetingUrl: t.meetingUrl,
+          inMeeting: t.inMeeting,
+          platform: t.platform,
+          meetingName: t.meetingName,
+          frames: [...t.frames.entries()].map(([fid, s]) => ({ frameId: fid, ...s })),
+        })),
+        forced: forcedActive,
         workerLog: (await chrome.storage.session.get({ dbgLog: [] })).dbgLog,
       });
     })();
@@ -213,119 +375,87 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.kind === 'COLLECT_TAB_DEBUG') {
     (async () => {
       const matches = chrome.runtime.getManifest().content_scripts.flatMap((cs) => cs.matches);
-      const found = [];
       let query = [];
       try { query = await chrome.tabs.query({ url: matches }); } catch (_) {}
+      const found = [];
       await Promise.all(
-        query.map(
-          (t) =>
-            new Promise((resolve) => {
-              try {
-                chrome.tabs.sendMessage(t.id, { kind: 'GET_TAB_DEBUG' }, (resp) => {
-                  void chrome.runtime.lastError;
-                  if (resp) found.push({ tabId: t.id, url: resp.url, state: resp.state, log: resp.log || [] });
-                  resolve();
-                });
-              } catch (_) {
-                resolve();
-              }
-            }),
-        ),
+        query.map(async (t) => {
+          let frames = [];
+          try { frames = await chrome.webNavigation.getAllFrames({ tabId: t.id }) || []; } catch (_) {}
+          // Top frame first so its URL/state lead the log; then subframes.
+          frames.sort((a, b) => a.frameId - b.frameId);
+          await Promise.all(
+            frames.map(
+              (f) =>
+                new Promise((resolve) => {
+                  try {
+                    chrome.tabs.sendMessage(t.id, { kind: 'GET_TAB_DEBUG' }, { frameId: f.frameId }, (resp) => {
+                      void chrome.runtime.lastError;
+                      if (resp) found.push({ tabId: t.id, frameId: f.frameId, url: resp.url, title: resp.title, platform: resp.platform, signals: resp.signals, census: resp.census, log: resp.log || [] });
+                      resolve();
+                    });
+                  } catch (_) { resolve(); }
+                }),
+            ),
+          );
+        }),
       );
       sendResponse(found);
     })();
     return true;
   }
+  if (msg.kind === 'GET_FORCE_ENABLED') {
+    sendResponse({ forceEnabled, forced: forcedActive });
+    return true;
+  }
   return false;
 });
 
-// Content-script events: JOIN / LEAVE / HEARTBEAT / DEBUG_TICK / MSG_NOTIFY
+// Content-script events: SENSOR beacons, DEBUG_TICK, MSG_NOTIFY.
 chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (['JOIN', 'LEAVE', 'HEARTBEAT', 'DEBUG_TICK', 'MSG_NOTIFY'].includes(msg.kind)) {
-    const tabId = sender.tab?.id;
-    if (tabId == null) return;
-    void handleContentEvent(tabId, msg);
+  if (msg.kind === 'SENSOR') {
+    void handleSensor(msg, sender);
+    return;
   }
-});
-
-async function handleContentEvent(tabId, msg) {
   if (msg.kind === 'DEBUG_TICK') {
+    const tabId = sender.tab?.id;
     const url = typeof msg.url === 'string' ? msg.url : '';
-    dbg(`[tab ${tabId}] ${msg.label}${url ? ` :: ${url.slice(0, 120)}` : ''}`);
+    dbg(`[tab ${tabId}${sender.frameId ? ` f${sender.frameId}` : ''}] ${msg.label}${url ? ` :: ${url.slice(0, 120)}` : ''}`);
     return;
   }
   if (msg.kind === 'MSG_NOTIFY') {
-    // Detection notifications originate here so failed creates never touch content.
     notify(msg.title || 'Meetily Auto-Record', msg.body || '');
     return;
   }
-  const prev = tabs.get(tabId) || { inMeeting: false, platform: msg.platform, meetingName: '' };
-  if (msg.kind === 'JOIN') {
-    dbg(`[tab ${tabId}] JOIN (platform=${msg.platform})`);
-    tabs.set(tabId, {
-      inMeeting: true,
-      platform: msg.platform || 'unknown',
-      meetingName: msg.meeting_name || 'Auto-recorded meeting',
-      lastBeat: Date.now(),
-    });
-    persistTabs();
-    // Start only when no OTHER tab was already in a meeting (recording is global).
-    if (otherMeetingCount(tabId) === 0) await startMeeting(tabs.get(tabId));
-  } else if (msg.kind === 'HEARTBEAT') {
-    const cur = tabs.get(tabId);
-    if (cur) {
-      cur.lastBeat = Date.now();
-      tabs.set(tabId, cur);
-      persistTabs();
-      const res = await callServer('/heartbeat');
-      if (!res.ok) {
-        dbg(`heartbeat failed: status=${res.status}`);
-        if (res.status === 0) {
-          notifyThrottled('server-down', 5 * 60_000, 'Meetily not reachable', 'Auto-record lost contact with the Meetily app — is it still running? If it exited, this recording stops being managed.');
-        } else if (res.status === 401) {
-          notifyThrottled('token-401', 5 * 60_000, 'Meetily rejected the token', 'Re-paste the token from Meetily settings into the extension options.');
-        }
-      }
-    }
-  } else if (msg.kind === 'LEAVE') {
-    const had = tabs.get(tabId)?.inMeeting ?? false;
-    dbg(`[tab ${tabId}] LEAVE (was in meeting: ${had})`);
-    tabs.set(tabId, { ...prev, inMeeting: false });
-    persistTabs();
-    if (had && !meetingState().any) await stopMeeting();
-  }
-}
+});
 
-function otherMeetingCount(exceptTabId) {
-  return [...tabs.entries()].filter(([id, v]) => id !== exceptTabId && v.inMeeting).length;
-}
-
-// Tabs closing while in a meeting => LEAVE
+// ---- tab lifecycle ----------------------------------------------------------
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  const had = tabs.get(tabId)?.inMeeting ?? false;
+  const t = tabSensors.get(tabId);
+  const had = t?.inMeeting ?? false;
   if (had) dbg(`[tab ${tabId}] closed during meeting -> LEAVE`);
-  tabs.delete(tabId);
-  persistTabs();
-  if (had && !meetingState().any) await stopMeeting('Tab closed');
+  tabSensors.delete(tabId);
+  await persistTabs();
+  if (had && !meetingAny() && !forcedActive) await stopMeeting('Tab closed');
 });
 
-// Tab navigated away from meeting URL: content script re-evaluates via tick();
-// also cover onUpdated URL changes for SPA navigations. NOTE: domain list must
-// match the manifest + content script or a LEAVE never fires on new domains.
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+// Tab navigated: if the top URL left the meeting domain, sensors die naturally
+// (no more beacons) — but handle the common case immediately.
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' && tab?.url) {
-    const had = tabs.get(tabId)?.inMeeting ?? false;
+    const t = tabSensors.get(tabId);
     const stillMeeting = /^https:\/\/[^\s]*\.?(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|teams\.cloud\.microsoft|m365\.cloud\.microsoft|zoom\.us)/i.test(tab.url);
-    if (had && !stillMeeting) {
-      dbg(`[tab ${tabId}] navigated away from meeting URL -> LEAVE`);
-      tabs.set(tabId, { inMeeting: false, platform: 'unknown', meetingName: '' });
-      persistTabs();
-      if (!meetingState().any) void stopMeeting('Left meeting URL');
+    if (t && !stillMeeting) {
+      const had = t.inMeeting;
+      dbg(`[tab ${tabId}] navigated away from meeting URL -> dropping sensor state`);
+      tabSensors.delete(tabId);
+      await persistTabs();
+      if (had && !meetingAny() && !forcedActive) void stopMeeting('Left meeting URL');
     }
   }
 });
 
-// ---- heartbeat alarm (keeps worker alive + flows through even when idle) ----
+// ---- heartbeat alarm (keeps worker alive + flows through) --------------------
 function scheduleHeartbeat() {
   chrome.alarms.create(ALARM_HEARTBEAT, { periodInMinutes: 0.25 });
 }
@@ -333,27 +463,63 @@ function stopHeartbeat() {
   chrome.alarms.clear(ALARM_HEARTBEAT);
 }
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === ALARM_HEARTBEAT) {
-    const ms = meetingState().any;
-    if (ms) {
-      const res = await callServer('/heartbeat');
-      if (!res.ok) dbg(`alarm heartbeat failed: status=${res.status}`);
-    } else {
-      stopHeartbeat();
-      setBadge('');
+  if (alarm.name !== ALARM_HEARTBEAT) return;
+  const active = meetingAny() || forcedActive;
+  if (!active) {
+    stopHeartbeat();
+    setBadge('');
+    return;
+  }
+  // Silence watchdog: an in-meeting tab whose frames beamed nothing for
+  // GONE_SILENCE_MS is gone (browser suspended the tab, or it was closed
+  // without an event) — stop the recording rather than beat forever.
+  const now = Date.now();
+  for (const [tabId, t] of [...tabSensors.entries()]) {
+    if (t.inMeeting && now - (t.lastBeacon || 0) > GONE_SILENCE_MS) {
+      dbg(`[tab ${tabId}] no sensor beacon for ${Math.round(GONE_SILENCE_MS / 1000)}s -> LEAVE (silent)`);
+      tabSensors.delete(tabId);
+      await persistTabs();
+      if (!meetingAny() && !forcedActive) await stopMeeting('Meeting detection went silent');
     }
+  }
+  if (meetingAny() || forcedActive) {
+    const res = await callServer('/heartbeat');
+    if (!res.ok) dbg(`alarm heartbeat failed: status=${res.status}`);
   }
 });
 
-// ---- boot -------------------------------------------------------------------
+// ---- action context menu (force start/stop) ----------------------------------
+chrome.runtime.onInstalled.addListener(() => {
+  try {
+    chrome.contextMenus.removeAll(() => {
+      chrome.contextMenus.create({ id: 'meetily-force-start', title: 'Force start recording now', contexts: ['action'] });
+      chrome.contextMenus.create({ id: 'meetily-force-stop', title: 'Stop forced recording', contexts: ['action'] });
+    });
+  } catch (_) { /* contextMenus unavailable */ }
+});
+chrome.contextMenus.onClicked.addListener((info, _tab) => {
+  if (info.menuItemId === 'meetily-force-start') void forceStart();
+  if (info.menuItemId === 'meetily-force-stop') void forceStop();
+});
+
+// ---- boot --------------------------------------------------------------------
 (async () => {
+  const { forceEnabled: fe } = await chrome.storage.local.get({ forceEnabled: false });
+  forceEnabled = !!fe;
   const { bootCount = 0 } = await chrome.storage.session.get({ bootCount: 0 });
   await chrome.storage.session.set({ bootCount: bootCount + 1 });
-  dbg(bootCount === 0 ? 'worker booted (fresh session)' : `worker cold-restarted (boot #${bootCount + 1}) — restoring tab state`);
+  dbg(bootCount === 0 ? 'worker v1.3 booted (fresh session)' : `worker v1.3 cold-restarted (boot #${bootCount + 1}) — restoring tab state`);
   await restoreTabs();
 })();
 
-// ---- install-time default config -------------------------------------------
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.forceEnabled) {
+    forceEnabled = !!changes.forceEnabled.newValue;
+    dbg(`forceEnabled -> ${forceEnabled}`);
+  }
+});
+
+// ---- install-time default config --------------------------------------------
 chrome.runtime.onInstalled.addListener(async () => {
   const { token } = await getConfig();
   if (!token) {
@@ -361,5 +527,3 @@ chrome.runtime.onInstalled.addListener(async () => {
     dbg('onInstalled: seeded placeholder token (paste the app token to pair)');
   }
 });
-
-// (end of service worker)

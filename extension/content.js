@@ -1,8 +1,11 @@
 // Meetily Auto-Record — content script.
 // Detects "in a live meeting" on Meet/Teams/Zoom web and reports JOIN/LEAVE/HEARTBEAT
 // to the service worker, which talks to the local Meetily trigger server.
-// v1.1 (PUN-801): on-detection notification, persistent debug ring, wider Teams
-// selectors, stop-path domain fix. Debug tap (window.__meetilyLog/__meetilyTick) kept.
+// v1.3 (PUN-801): SENSOR architecture — every frame reports raw signals every 2s;
+// the worker merges per-tab and owns join/leave state. Fixes the split-frame case
+// (video/controls in a same-origin subframe whose URL fails inMeetingPath — neither
+// frame could fire JOIN alone; this made the extension trigger never fire on Meet).
+// Debug tap (window.__meetilyLog/__meetilyTick/__meetilyCensus) kept.
 (() => {
   // ---- debug mode ------------------------------------------------------------
   let DEBUG = false;
@@ -200,87 +203,49 @@
     return false;
   }
 
-  let state = 'IDLE'; // IDLE | JOINING | IN_MEETING
-  let joinSeenAt = 0;
-
-  function send(kind, extra) {
-    chrome.runtime.sendMessage({ kind, platform: platform(), tabId: 'cs', ...extra }).catch(() => {});
-  }
-
-  // On-detection notification fires from the worker (MSG_NOTIFY); content only reports.
-  function notifyDetected() {
-    try { chrome.runtime.sendMessage({ kind: 'MSG_NOTIFY', title: 'Meeting detected', body: `${meetingTitle() || platform()} on ${platform()} — starting auto-record.` }); } catch (_) {}
-  }
-
-  function tick() {
+  let beat = 0;
+  // Raw per-frame signal snapshot. No local state machine: the worker merges
+  // signals across ALL frames of the tab (top + same-origin subframes), because
+  // Meet/Teams may split URL context (top) from UI/media (subframe).
+  function gather() {
     const joined = leaveButtonVisible();
     const pathOk = inMeetingPath();
     const media = mediaPlaying();
     const lobby = lobbyVisible();
-    const inCallSignal = joined || (media && !lobby);
-    // Waiting on a meeting URL with no signal: carry a compact census into the
-    // standing log every 30s so stuck-lobby vs broken-DOM is visible in history.
-    if (pathOk && !inCallSignal && state === 'IDLE') {
-      if (!tick.lastCensusAt || Date.now() - tick.lastCensusAt > 30000) {
-        tick.lastCensusAt = Date.now();
+    return { joined, pathOk, media, lobby, isTop: window.top === window };
+  }
+
+  function tick() {
+    beat++;
+    const g = gather();
+    dbg(`beacon pathOk=${g.pathOk} leave=${g.joined} media=${g.media} lobby=${g.lobby} top=${g.isTop} (probe: light=${probeState.lightMatches} vis=${probeState.visibleMatches} shadow=${probeState.shadowRoots}r/${probeState.shadowMatches}m "${probeState.sampleLabel}")`);
+    // Census while a meeting URL is open but this frame shows no in-call signal —
+    // including from subframes, so the worker log sees what each frame contains.
+    // Census whenever this frame shows no in-call signal — subframes matter as
+    // much as the top frame here (the mystery frame may be either). Throttled.
+    if (!g.joined && !(g.media && !g.lobby)) {
+      if (beat % 15 === 0) {
         try {
           const c = domCensus();
-          dbg(`census: buttons=${c.visibleButtons}/${c.buttons} videos=${c.videos.length} iframes=${c.iframes.length} labels=[${c.labels.slice(0, 8).join(' | ')}] data=[${c.dataAttrs.slice(0, 6).join(', ')}] iframesrc=[${c.iframes.slice(0, 3).join(' ; ')}]`);
+          dbg(`census: buttons=${c.visibleButtons}/${c.buttons} videos=${c.videos.length} iframes=${c.iframes.length} frame=${c.frames.top ? 'top' : 'sub'} labels=[${c.labels.slice(0, 8).join(' | ')}] data=[${c.dataAttrs.slice(0, 6).join(', ')}] iframesrc=[${c.iframes.slice(0, 3).join(' ; ')}]`);
         } catch (e) {
           dbg('census failed: ' + e);
         }
       }
     }
-    dbg(`state=${state} leaveVisible=${joined} pathOk=${pathOk} media=${media} lobby=${lobby} (probe: light=${probeState.lightMatches} vis=${probeState.visibleMatches} shadow=${probeState.shadowRoots}r/${probeState.shadowMatches}m "${probeState.sampleLabel}")`);
-
-    if (state === 'IDLE') {
-      if (pathOk && inCallSignal) {
-        if (joinSeenAt === 0) {
-          joinSeenAt = Date.now();
-          state = 'JOINING';
-          dbg(`JOINING: ${joined ? 'leave button' : 'live media (no lobby)'} + meeting URL seen, confirming ~3s`);
-          sendDebugTick('joining', { url: location.href, pathOk, joined, media, lobby, title: document.title });
-        }
-      } else {
-        joinSeenAt = 0;
-        if (pathOk && !inCallSignal) dbg('IDLE: meeting URL but no in-call signal yet (lobby?)');
-      }
-    } else if (state === 'JOINING') {
-      if (inCallSignal && pathOk) {
-        if (Date.now() - joinSeenAt > 3000) {
-          state = 'IN_MEETING';
-          send('JOIN', { meeting_name: meetingTitle() });
-          notifyDetected();
-          dbg('IN_MEETING: JOIN sent');
-          sendDebugTick('join-confirmed', { url: location.href, title: document.title });
-        }
-      } else if (Date.now() - joinSeenAt > 30000) {
-        state = 'IDLE';
-        joinSeenAt = 0;
-        dbg('JOINING timed out (30s) — back to IDLE');
-      }
-    } else if (state === 'IN_MEETING') {
-      if (inCallSignal && pathOk) {
-        send('HEARTBEAT');
-        tick.absentSince = 0;
-      } else {
-        // Require 2 consecutive absent ticks to debounce UI hiccups.
-        if (tick.absentSince === 0) {
-          tick.absentSince = Date.now();
-          dbg('IN_MEETING: detection went dark, starting 8s leave debounce');
-        } else if (Date.now() - tick.absentSince > 8000) {
-          state = 'IDLE';
-          tick.absentSince = 0;
-          dbg('LEAVE after 8s without detection');
-          sendDebugTick('leave', { url: location.href });
-          send('LEAVE');
-        }
-      }
-    }
+    try {
+      chrome.runtime.sendMessage({
+        kind: 'SENSOR',
+        platform: platform(),
+        meetingName: meetingTitle(),
+        title: document.title,
+        url: location.href,
+        ...g,
+      });
+    } catch (_) {}
   }
-  tick.absentSince = 0;
   window.__meetilyTick = tick;
-  dbg(`content script v1.2 loaded on ${location.hostname} (platform=${platform()})`);
+  dbg(`content script v1.3 loaded on ${location.hostname} fr${window.top === window ? 'TOP' : 'SUB'} (platform=${platform()})`);
   sendDebugTick('script-loaded', { url: location.href, title: document.title });
 
   // DevTools helpers for bug reports:
@@ -310,6 +275,10 @@
       w: v.videoWidth || 0, h: v.videoHeight || 0, visible: isReallyVisible(v),
     }));
     const iframes = [...document.querySelectorAll('iframe')].map((f) => (f.src || '').slice(0, 90));
+    const frames = {
+      top: window.top === window,
+      frameCount: window.top === window ? 0 : 1,
+    };
     const dataAttrs = {};
     for (const b of buttons.slice(0, 400)) {
       for (const a of b.attributes) {
@@ -329,6 +298,7 @@
       labels: Object.entries(labelCounts).map(([k, c]) => `${k}×${c}`).slice(0, 20),
       videos,
       iframes,
+      frames,
       dataAttrs: topData,
       leaveSelectorsEverHit: Object.keys(selectorHits),
     };
@@ -349,20 +319,21 @@
   // Answer the worker's log collectors.
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.kind === 'GET_TAB_DEBUG') {
-      sendResponse({ url: location.href, title: document.title, platform: platform(), log: dbgLog, state, census: domCensus() });
+      const g = gather();
+      sendResponse({ url: location.href, title: document.title, platform: platform(), log: dbgLog, signals: g, census: domCensus() });
       return true;
     }
     if (msg.kind === 'RECHECK_STATE') {
-      sendResponse({ url: location.href, title: document.title, platform: platform(), state });
+      sendResponse({ url: location.href, title: document.title, platform: platform(), signals: gather() });
       return true;
     }
     return false;
   });
 
-  // Tell the worker this tab closed (worker also watches chrome.tabs, belt & braces).
+  // Tell the worker this frame is going away (worker watches chrome.tabs too).
   window.addEventListener('beforeunload', () => {
-    if (state === 'IN_MEETING') send('LEAVE', { closing: true });
+    try { chrome.runtime.sendMessage({ kind: 'DEBUG_TICK', label: 'frame-unloading', url: location.href }); } catch (_) {}
   });
 
-  console.log('[Meetily Auto-Record] content script v1.1 active on', location.hostname);
+  console.log('[Meetily Auto-Record] content script v1.3 active on', location.hostname, window.top === window ? '(top frame)' : '(subframe)');
 })();
