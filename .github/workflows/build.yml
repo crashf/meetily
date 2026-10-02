@@ -617,13 +617,16 @@ jobs:
 
       - name: Fork unsigned mode (skip updater artifacts when no key)
         # Pund-IT fork: without TAURI_SIGNING_PRIVATE_KEY, updater-artifact
-        # signing fails AFTER the full compile. Upstream (key configured)
-        # gets an empty output here and the args line is unchanged.
+        # signing fails AFTER the full compile. The override is written to a
+        # file (not inline args): ${{ }} substitution would strip the JSON's
+        # inner quotes in bash steps (exit 2 "key must be a string"). Upstream
+        # (key configured) skips this step and the args line is unchanged.
         id: unsigned-args
         if: inputs.sign-binaries && env.HAS_UPDATER_KEY != 'true'
         shell: bash
         run: |
-          echo 'args=--config {"bundle":{"createUpdaterArtifacts":false}}' >> "$GITHUB_OUTPUT"
+          printf '%s' '{"bundle":{"createUpdaterArtifacts":false}}' > "$RUNNER_TEMP/updater-off.json"
+          echo "args=--config $RUNNER_TEMP/updater-off.json" >> "$GITHUB_OUTPUT"
 
       - name: Build with Tauri
         # Pund-IT fork: on macOS without APPLE_CERTIFICATE, tauri-bundler still
