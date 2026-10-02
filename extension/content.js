@@ -139,6 +139,24 @@
     return results;
   }
 
+  const LEAVE_RE = /\b(leave|hang\s?up|end\s+call|end\s+the\s+call)\b/i;
+
+  // Label-based leave detection (v1.3.2): field census 2026-10-02 10:55 proved the
+  // in-call Meet DOM carries NO attr our selectors key on (no data-call-exit-id,
+  // no data-tooltip="Leave") while button LABELS are fully populated. Scan labels.
+  function leaveLabelHits() {
+    const hits = [];
+    for (const n of document.querySelectorAll('button, div[role="button"]')) {
+      if (!isReallyVisible(n)) continue;
+      const label = (n.getAttribute('aria-label') || n.getAttribute('data-tooltip') || (n.textContent || '')).trim();
+      if (label && LEAVE_RE.test(label)) {
+        hits.push(label.replace(/\s+/g, ' ').slice(0, 40));
+        if (hits.length > 5) break;
+      }
+    }
+    return hits;
+  }
+
   function leaveButtonVisible() {
     let lightMatches = 0;
     let visible = 0;
@@ -209,10 +227,11 @@
   // Meet/Teams may split URL context (top) from UI/media (subframe).
   function gather() {
     const joined = leaveButtonVisible();
+    const labelHits = leaveLabelHits();
     const pathOk = inMeetingPath();
     const media = mediaPlaying();
     const lobby = lobbyVisible();
-    return { joined, pathOk, media, lobby, isTop: window.top === window };
+    return { joined: joined || labelHits.length > 0, labelHits, pathOk, media, lobby, isTop: window.top === window };
   }
 
   function tick() {
@@ -223,7 +242,9 @@
     if (nowMs - (tick.lastSentAt || 0) < 1500) return;
     tick.lastSentAt = nowMs;
     const g = gather();
-    dbg(`beacon pathOk=${g.pathOk} leave=${g.joined} media=${g.media} lobby=${g.lobby} top=${g.isTop} (probe: light=${probeState.lightMatches} vis=${probeState.visibleMatches} shadow=${probeState.shadowRoots}r/${probeState.shadowMatches}m "${probeState.sampleLabel}")`);
+    // Beacon diagnostics: label hits make leave-detection truth visible in the log
+    // (no more blind selector guessing — v1.3.2 field finding).
+    dbg(`beacon pathOk=${g.pathOk} leave=${g.joined} media=${g.media} lobby=${g.lobby} top=${g.isTop}${g.labelHits.length ? ` labels=[${g.labelHits.join(' / ')}]` : ''} (probe: light=${probeState.lightMatches} vis=${probeState.visibleMatches} shadow=${probeState.shadowRoots}r/${probeState.shadowMatches}m "${probeState.sampleLabel}")`);
     // Census while a meeting URL is open but this frame shows no in-call signal —
     // including from subframes, so the worker log sees what each frame contains.
     // Census whenever this frame shows no in-call signal — subframes matter as

@@ -525,6 +525,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.forceEnabled) {
     forceEnabled = !!changes.forceEnabled.newValue;
     dbg(`forceEnabled -> ${forceEnabled}`);
+    // Recompute every tab NOW: meetingUrl is only refreshed by top-frame beacons,
+    // which background-throttled tabs send rarely — waiting for one made the
+    // force toggle appear to do nothing (v1.3.1 field finding).
+    for (const [tabId, t] of tabSensors.entries()) void recomputeTab(tabId, t);
   }
 });
 
