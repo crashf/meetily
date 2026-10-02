@@ -28,7 +28,9 @@
     /(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|teams\.cloud\.microsoft|m365\.cloud\.microsoft|([a-z0-9-]+\.)*zoom\.us)$/i;
 
   const LEAVE_SELECTORS = [
-    // Google Meet (multi-locale: aria-label varies, button carries data props)
+    // Google Meet: the exit button carries data-call-exit-id (kept even when
+    // aria-label wording changes); plus visible-aria / tooltip candidates.
+    'button[data-call-exit-id]',
     'button[data-call-exit-id][aria-label*="eave"]',
     'button[data-tooltip*="Leave"]',
     'div[role="button"][aria-label*="eave"], div[role="button"][aria-label*="Leave"]',
@@ -55,7 +57,11 @@
   // teams.microsoft.com/teams.live.com, so a JOIN there could never be UN-seen:
   // LEAVE never fired, and new joins on those domains were mis-detected too.
   function inMeetingPath() {
-    if (isGoogleMeet()) return /^\/[a-z]{3}-[a-z]{4}-[a-z]{5}(\/|$)/i.test(location.pathname);
+    // FIX (PUN-801 field log 2026-10-02): Meet codes are 3-4-3 (e.g. khk-gyzd-jgq);
+    // the old regex demanded a 5-letter last segment so EVERY standard Meet code
+    // failed pathOk and detection silently never fired. Accept 3-4-3 .. 3-4-5,
+    // tolerate digits in any segment.
+    if (isGoogleMeet()) return /^\/[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3,5}(\/|$)/i.test(location.pathname);
     if (isTeams()) return /(\/meeting[^\/]*|\/call|[#&?]conversation=)/i.test(location.href);
     if (isZoom()) return /\/wc\/|\/j\//i.test(location.pathname);
     return false;
@@ -65,7 +71,7 @@
   function meetingTitle() {
     let t = document.title || '';
     t = t.replace(/\s*\|\s*(Google Meet|Microsoft Teams|Zoom)\s*$/i, '').trim();
-    if (isGoogleMeet() && /^[a-z]{3}-[a-z]{4}-[a-z]{5}$/i.test(t)) {
+    if (isGoogleMeet() && /^[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3,5}$/i.test(t)) {
       return t.replace(/-([a-z])/g, (_, c) => c.toUpperCase()).replace(/([A-Z])/g, ' $1').trim();
     }
     if (isTeams()) {
