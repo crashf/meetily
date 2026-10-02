@@ -250,6 +250,7 @@ async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (
                             "auto-record-stopped",
                             serde_json::json!({"meeting_name": stopped_name}),
                         );
+                        super::emit_post_processing_complete(&app);
                     }
                     (200, ok_json(Some(false)))
                 }

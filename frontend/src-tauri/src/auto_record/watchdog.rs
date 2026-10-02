@@ -58,6 +58,7 @@ pub async fn heartbeat_monitor<R: Runtime>(app: AppHandle<R>) {
                     *super::STATE.session.lock().unwrap_or_else(|e| e.into_inner()) = None;
                     super::emit_event(&app, "auto-record-stopped",
                         serde_json::json!({"reason": "heartbeat-deadman", "meeting_name": session.meeting_name}));
+                    super::emit_post_processing_complete(&app);
                 }
                 Err(e) => log::error!("auto-record: deadman stop failed: {}", e),
             }

@@ -166,6 +166,62 @@ pub async fn save_config<R: Runtime>(app: &AppHandle<R>, cfg: &AutoRecordConfig)
     }
 }
 
+/// Emit the shared completion event consumed by the frontend post-processing provider.
+/// Keep it aligned with normal tray stop behavior: the native stop has completed, and the
+/// frontend now waits for `recording-stopped` metadata/transcription before saving.
+pub fn emit_post_processing_complete<R: Runtime>(app: &AppHandle<R>) {
+    if let Err(e) = app.emit("recording-stop-complete", true) {
+        log::error!("auto-record: failed to emit recording-stop-complete: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod post_processing_contract_tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn source(relative: &str) -> String {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("auto_record")
+            .join(relative);
+        fs::read_to_string(path).expect("auto-record source should be available to contract tests")
+    }
+
+    fn assert_stop_routes_to_post_processing(relative: &str, call: &str) {
+        let code = source(relative);
+        let stop = code.find("stop_recording(").expect("stop call exists");
+        let success = code[stop..]
+            .find("Ok(())")
+            .map(|i| stop + i)
+            .expect("success arm exists");
+        let failure = code[success..]
+            .find("Err(e)")
+            .map(|i| success + i)
+            .expect("failure arm exists");
+        let handoff = code[success..failure].find(call).map(|i| success + i);
+        assert!(
+            handoff.is_some(),
+            "successful stop must emit shared completion in {relative}"
+        );
+    }
+
+    #[test]
+    fn extension_stop_routes_after_success_only() {
+        assert_stop_routes_to_post_processing("server.rs", "emit_post_processing_complete");
+    }
+
+    #[test]
+    fn heartbeat_stop_routes_after_success_only() {
+        assert_stop_routes_to_post_processing("watchdog.rs", "emit_post_processing_complete");
+    }
+
+    #[test]
+    fn audio_gate_stop_routes_after_success_only() {
+        assert_stop_routes_to_post_processing("audio_gate.rs", "emit_post_processing_complete");
+    }
+}
+
 /// Emit a status event so the UI/tray can surface auto-record activity.
 pub fn emit_event<R: Runtime>(app: &AppHandle<R>, kind: &str, payload: serde_json::Value) {
     let _ = app.emit(

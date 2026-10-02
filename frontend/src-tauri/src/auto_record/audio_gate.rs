@@ -236,6 +236,7 @@ async fn stop_gate_recording<R: Runtime>(app: &AppHandle<R>) {
         Ok(()) => {
             *STATE.session.lock().unwrap_or_else(|e| e.into_inner()) = None;
             emit_event(app, "auto-record-stopped", serde_json::json!({"trigger": "audio-gate-silence"}));
+            super::emit_post_processing_complete(app);
         }
         Err(e) => log::error!("auto-record gate: stop failed: {}", e),
     }
