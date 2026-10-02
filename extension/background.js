@@ -96,7 +96,10 @@ function parseMeetingUrl(url) {
   try {
     const u = new URL(url);
     if (u.hostname === 'meet.google.com') {
-      return /^[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3,5}(\/|$)/i.test(u.pathname);
+      // pathname BEGINS WITH '/'; the pre-v1.3.3 pattern omitted the leading slash,
+      // so this returned false for EVERY Meet URL — meetingUrl stayed false in all
+      // field logs, no JOIN ever fired, and force-start (meetingish gate) was dead.
+      return /^\/[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3,5}(\/|$)/i.test(u.pathname);
     }
     if (/(^|\.)(teams\.microsoft\.com|teams\.live\.com|teams\.cloud\.microsoft|m365\.cloud\.microsoft)$/i.test(u.hostname)) {
       return /(\/meeting[^\/]*|\/call|[#&?]conversation=)/i.test(u.href);
@@ -246,6 +249,11 @@ async function handleSensor(msg, sender) {
   await recomputeTab(tabId, t);
 }
 
+async function tokenReady() {
+  const { token } = await getConfig();
+  return Boolean(token);
+}
+
 async function startMeeting(info) {
   dbg(`startMeeting: platform=${info.platform} name="${info.meetingName}"`);
   if (!(await tokenReady())) {
@@ -340,11 +348,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     setBadge('');
   }
   if (msg.kind === 'FORCE_START') {
-    forceStart().then(sendResponse);
+    forceStart()
+      .then(sendResponse)
+      .catch((e) => {
+        dbg(`FORCE_START error: ${e && e.stack ? e.stack : e}`);
+        sendResponse({ ok: false, error: String(e) });
+      });
     return true;
   }
   if (msg.kind === 'FORCE_STOP') {
-    forceStop().then(sendResponse);
+    forceStop()
+      .then(sendResponse)
+      .catch((e) => {
+        dbg(`FORCE_STOP error: ${e && e.stack ? e.stack : e}`);
+        sendResponse({ ok: false, error: String(e) });
+      });
     return true;
   }
   return false;
@@ -421,9 +439,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 // Content-script events: SENSOR beacons, DEBUG_TICK, MSG_NOTIFY.
+// .catch on the async path: an unhandled rejection in MV3 is INVISIBLE (worker
+// console only) — v1.3.0-1.3.2 died silently here on the missing tokenReady fn.
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.kind === 'SENSOR') {
-    void handleSensor(msg, sender);
+    handleSensor(msg, sender).catch((e) => dbg(`SENSOR handler error: ${e && e.stack ? e.stack : e}`));
     return;
   }
   if (msg.kind === 'DEBUG_TICK') {
