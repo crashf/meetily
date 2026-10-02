@@ -185,12 +185,7 @@ async function recomputeTab(tabId, t) {
 
   const anyJoined = sigs.some((s) => s.joined);
   const anyMediaNoLobby = sigs.some((s) => s.media && !s.lobby);
-  // Teams can host an active call in the SPA at the app-root URL (field log:
-  // teams.cloud.microsoft/ with a visible in-call "Leave" control). That
-  // explicit UI signal is sufficient for Teams only; Google Meet and Zoom
-  // retain their existing meeting-URL gate unchanged.
-  const teamsInCall = t.platform === 'teams' && anyJoined;
-  const meetingish = (t.meetingUrl && (anyJoined || anyMediaNoLobby || forceEnabled)) || teamsInCall;
+  const meetingish = t.meetingUrl && (anyJoined || anyMediaNoLobby || forceEnabled);
 
   if (meetingish) {
     // Fresh positive evidence cancels a pending leave debounce. When already in
