@@ -218,6 +218,19 @@
     const media = mediaPlaying();
     const lobby = lobbyVisible();
     const inCallSignal = joined || (media && !lobby);
+    // Waiting on a meeting URL with no signal: carry a compact census into the
+    // standing log every 30s so stuck-lobby vs broken-DOM is visible in history.
+    if (pathOk && !inCallSignal && state === 'IDLE') {
+      if (!tick.lastCensusAt || Date.now() - tick.lastCensusAt > 30000) {
+        tick.lastCensusAt = Date.now();
+        try {
+          const c = domCensus();
+          dbg(`census: buttons=${c.visibleButtons}/${c.buttons} videos=${c.videos.length} iframes=${c.iframes.length} labels=[${c.labels.slice(0, 8).join(' | ')}] data=[${c.dataAttrs.slice(0, 6).join(', ')}] iframesrc=[${c.iframes.slice(0, 3).join(' ; ')}]`);
+        } catch (e) {
+          dbg('census failed: ' + e);
+        }
+      }
+    }
     dbg(`state=${state} leaveVisible=${joined} pathOk=${pathOk} media=${media} lobby=${lobby} (probe: light=${probeState.lightMatches} vis=${probeState.visibleMatches} shadow=${probeState.shadowRoots}r/${probeState.shadowMatches}m "${probeState.sampleLabel}")`);
 
     if (state === 'IDLE') {
@@ -267,14 +280,59 @@
   }
   tick.absentSince = 0;
   window.__meetilyTick = tick;
-  dbg(`content script v1.1.2 loaded on ${location.hostname} (platform=${platform()})`);
+  dbg(`content script v1.2 loaded on ${location.hostname} (platform=${platform()})`);
   sendDebugTick('script-loaded', { url: location.href, title: document.title });
 
   // DevTools helpers for bug reports:
   //   __meetilyTick()                     — run one detection pass now
   //   __meetilyLog                        — ring buffer
   //   __meetilySelectorHits()             — which selectors have matched so far
+  //   __meetilyCensus()                   — full DOM census (buttons/videos/iframes)
   window.__meetilySelectorHits = () => ({ ...selectorHits });
+  window.__meetilyCensus = domCensus;
+
+  // DOM census: ground truth of what this frame actually contains. Attached to
+  // GET_TAB_DEBUG responses and the options-page probe — when detection fails,
+  // this names the DOM we could (or could not) see instead of guessing selectors.
+  function domCensus() {
+    const isBtn = (n) => n.tagName === 'BUTTON' || n.getAttribute('role') === 'button';
+    const buttons = [...document.querySelectorAll('button, div[role="button"]')];
+    const visibleButtons = buttons.filter(isReallyVisible);
+    const labelOf = (b) =>
+      b.getAttribute('aria-label') || b.getAttribute('data-tooltip') ||
+      (b.textContent || '').trim().slice(0, 30) || '(unlabeled)';
+    const labelCounts = {};
+    for (const b of visibleButtons.slice(0, 200)) {
+      const l = labelOf(b);
+      labelCounts[l] = (labelCounts[l] || 0) + 1;
+    }
+    const videos = [...document.querySelectorAll('video')].map((v) => ({
+      w: v.videoWidth || 0, h: v.videoHeight || 0, visible: isReallyVisible(v),
+    }));
+    const iframes = [...document.querySelectorAll('iframe')].map((f) => (f.src || '').slice(0, 90));
+    const dataAttrs = {};
+    for (const b of buttons.slice(0, 400)) {
+      for (const a of b.attributes) {
+        if (a.name.startsWith('data-')) {
+          const key = a.name + (a.value ? '=' + a.value.slice(0, 24) : '');
+          dataAttrs[key] = (dataAttrs[key] || 0) + 1;
+        }
+      }
+    }
+    const topData = Object.entries(dataAttrs).sort((x, y) => y[1] - x[1]).slice(0, 12)
+      .map(([k, c]) => `${k}×${c}`);
+    return {
+      at: Date.now(),
+      href: location.href,
+      buttons: buttons.length,
+      visibleButtons: visibleButtons.length,
+      labels: Object.entries(labelCounts).map(([k, c]) => `${k}×${c}`).slice(0, 20),
+      videos,
+      iframes,
+      dataAttrs: topData,
+      leaveSelectorsEverHit: Object.keys(selectorHits),
+    };
+  }
 
   // Observe DOM + URL changes; poll as fallback every 2s (cheap: selector scan only).
   setInterval(tick, 2000);
@@ -291,7 +349,7 @@
   // Answer the worker's log collectors.
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.kind === 'GET_TAB_DEBUG') {
-      sendResponse({ url: location.href, title: document.title, platform: platform(), log: dbgLog, state });
+      sendResponse({ url: location.href, title: document.title, platform: platform(), log: dbgLog, state, census: domCensus() });
       return true;
     }
     if (msg.kind === 'RECHECK_STATE') {

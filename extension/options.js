@@ -77,6 +77,13 @@ function render(found) {
   for (const tab of found || []) {
     lines.push(`── tab ${tab.tabId} · ${tab.url?.slice(0, 100) || '?'} · state=${tab.state}`);
     lines.push(...(tab.log || []).slice(-60));
+    const c = tab.census;
+    if (c) {
+      lines.push(`   CENSUS: buttons=${c.visibleButtons}/${c.buttons} videos=${JSON.stringify(c.videos)} iframes=${c.iframes.length}`);
+      lines.push(`   labels: ${c.labels.slice(0, 12).join(' | ') || '(none)'}`);
+      lines.push(`   data-attrs: ${c.dataAttrs.join(', ') || '(none)'}`);
+      if (c.iframes.length) lines.push(`   iframe srcs: ${c.iframes.join(' ; ') || '(none)'}`);
+    }
   }
   const text = lines.join('\n') || '(no meeting tabs open — open a Meet/Teams/Zoom page to see detection logs)';
   return text;
@@ -109,6 +116,26 @@ $('copyLog').addEventListener('click', async () => {
     $('copyLog').textContent = 'Copied ✓';
     setTimeout(() => ($('copyLog').textContent = 'Copy debug log'), 1200);
   } catch (_) {}
+});
+
+// One-shot deep probe: force-refreshes the live view including the DOM census
+// from every open meeting tab (buttons, labels, videos, iframes, data-attrs).
+$('probe').addEventListener('click', async () => {
+  $('logwrap').classList.add('show');
+  $('probe').textContent = 'Probing…';
+  try {
+    const found = await chrome.runtime.sendMessage({ kind: 'COLLECT_TAB_DEBUG' });
+    lastSnapshot = '';
+    const view = await chrome.runtime.sendMessage({ kind: 'GET_DEBUG_VIEW' });
+    const workerLines = (view?.workerLog || []).map((l) => '· ' + l);
+    const text =
+      `== worker ==\n${workerLines.join('\n')}\n\n== meeting tabs (fresh probe) ==\n${render(found)}`;
+    $('log').textContent = text;
+    lastSnapshot = text;
+  } catch (e) {
+    $('log').textContent = 'probe failed: ' + e;
+  }
+  $('probe').textContent = 'Probe meeting tab now';
 });
 
 restore();
