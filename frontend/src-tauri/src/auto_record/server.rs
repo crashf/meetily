@@ -350,24 +350,49 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) -> ServerExit {
     }
 
     let addr = format!("127.0.0.1:{}", cfg.port);
-    let listener = match TcpListener::bind(&addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            error!("auto-record: failed to bind {}: {}", addr, e);
-            super::debug::debug_log(&app, "server", "error", format!("failed to bind {}: {}", addr, e));
-            super::notify::notify_throttled(
-                &app,
-                "bind-fail",
-                10 * 60_000,
-                "Meetily trigger server down",
-                &format!("Meetily could not listen on {} — the browser extension cannot trigger recording. ({})", addr, e),
-            );
-            emit_event(
-                &app,
-                "server-error",
-                serde_json::json!({"error": e.to_string(), "port": cfg.port}),
-            );
-            return ServerExit::BindFailed(e.to_string());
+    // Bind with inline retries: after a config-change restart the old listener may
+    // take a moment to release the port — a single bind attempt + 30s watchdog
+    // backoff left up to a 30s "not running" window (PUN-801 field finding).
+    let listener = {
+        let mut last_err = String::new();
+        let mut acquired = None;
+        for attempt in 0..12 {
+            match TcpListener::bind(&addr).await {
+                Ok(l) => {
+                    acquired = Some(l);
+                    break;
+                }
+                Err(e) => {
+                    last_err = format!("{}", e);
+                    super::debug::debug_log(
+                        &app,
+                        "server",
+                        "warn",
+                        format!("bind attempt {}/12 failed ({}); retrying in 300ms", attempt + 1, e),
+                    );
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
+            }
+        }
+        match acquired {
+            Some(l) => l,
+            None => {
+                error!("auto-record: failed to bind {}: {}", addr, last_err);
+                super::debug::debug_log(&app, "server", "error", format!("failed to bind {} after retries: {}", addr, last_err));
+                super::notify::notify_throttled(
+                    &app,
+                    "bind-fail",
+                    10 * 60_000,
+                    "Meetily trigger server down",
+                    &format!("Meetily could not listen on {} — the browser extension cannot trigger recording. ({})", addr, last_err),
+                );
+                emit_event(
+                    &app,
+                    "server-error",
+                    serde_json::json!({"error": last_err, "port": cfg.port}),
+                );
+                return ServerExit::BindFailed(last_err);
+            }
         }
     };
 

@@ -80,6 +80,11 @@ export const autoRecordService = {
     return invoke<{ ok: boolean }>('auto_record_test_notification');
   },
 
+  /** Ask the watchdog to recycle the trigger server (manual restart button). */
+  async restartServer(): Promise<{ ok: boolean }> {
+    return invoke<{ ok: boolean }>('auto_record_restart_server');
+  },
+
   /** Clear the in-memory diagnostic ring. */
   async clearDiagnostics(): Promise<{ ok: boolean }> {
     return invoke<{ ok: boolean }>('auto_record_clear_diagnostics');

@@ -78,9 +78,13 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
                 ServerExit::BindFailed(e) => {
                     log::error!(
                         "auto-record watchdog: trigger server failed to bind ({}); retrying in {}s",
-                        e, RECHECK_INTERVAL_MS / 1000
+                        e, 10
                     );
-                    tokio::time::sleep(Duration::from_millis(RECHECK_INTERVAL_MS)).await;
+                    // Inline bind retries inside server::run handle the short races
+                    // (config-save restarts); this backoff covers real conflicts
+                    // (another app squatting the port) — 10s, not 30s.
+                    tokio::time::sleep(Duration::from_millis(10_000)).await;
+                    super::debug::debug_log(&app, "watchdog", "warn", format!("bind failed ({}); watchdog retry in 10s", e));
                 }
                 ServerExit::DisabledAtBoot => {
                     // Disabled in settings — sleep, then re-check in case it's re-enabled.

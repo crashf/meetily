@@ -153,3 +153,14 @@ pub async fn auto_record_clear_diagnostics<R: Runtime>(
     debug_log(&app, "ui", "info", "Diagnostics cleared".to_string());
     Ok(serde_json::json!({"ok": true}))
 }
+
+/// Manual trigger-server restart (Settings button): signal shutdown; the watchdog
+/// respawns within ~1s. With inline bind retries this is a fast, reliable recycle.
+#[tauri::command]
+pub async fn auto_record_restart_server<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<serde_json::Value, String> {
+    debug_log(&app, "ui", "info", "Manual trigger-server restart requested".to_string());
+    super::server::signal_shutdown();
+    Ok(serde_json::json!({"ok": true}))
+}

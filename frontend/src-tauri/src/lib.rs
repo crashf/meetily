@@ -619,6 +619,7 @@ pub fn run() {
             auto_record::debug::auto_record_get_diagnostics,
             auto_record::debug::auto_record_test_notification,
             auto_record::debug::auto_record_clear_diagnostics,
+            auto_record::debug::auto_record_restart_server,
             start_recording,
             stop_recording,
             is_recording,

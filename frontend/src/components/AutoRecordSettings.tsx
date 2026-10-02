@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, RefreshCw, Loader2 } from 'lucide-react';
 import {
   autoRecordService,
   AutoRecordStatus,
@@ -17,13 +17,25 @@ export function AutoRecordSettings() {
   const [status, setStatus] = useState<AutoRecordStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [diag, setDiag] = useState<AutoRecordDiagnostics | null>(null);
 
+  // Poll server status live (2s): a one-shot fetch on mount kept showing a stale
+  // "Trigger server: not running" for minutes after the watchdog recovered
+  // (PUN-801 field finding).
   useEffect(() => {
-    autoRecordService
-      .getStatus()
-      .then(setStatus)
-      .catch((e) => console.error('auto-record: failed to load status', e));
+    let alive = true;
+    const load = () =>
+      autoRecordService
+        .getStatus()
+        .then((s) => alive && setStatus(s))
+        .catch((e) => console.error('auto-record: failed to load status', e));
+    load();
+    const t = setInterval(load, 2000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
   }, []);
 
   // Poll diagnostics while the debug panel is open.
@@ -72,6 +84,20 @@ export function AutoRecordSettings() {
       setTimeout(() => setCopied(false), 1500);
     } catch {
       toast.error('Could not copy token');
+    }
+  };
+
+  const restartServer = async () => {
+    setRestarting(true);
+    try {
+      await autoRecordService.restartServer();
+      toast.success('Restarting trigger server…');
+      // The live status poll reflects the new state within ~2s.
+    } catch (e) {
+      console.error('auto-record: restart failed', e);
+      toast.error('Failed to restart trigger server');
+    } finally {
+      setTimeout(() => setRestarting(false), 2500);
     }
   };
 
@@ -164,7 +190,16 @@ export function AutoRecordSettings() {
           ) : (
             <span className="text-amber-600 dark:text-amber-400">not running</span>
           )}{' '}
-          on 127.0.0.1:{cfg.port}
+          on 127.0.0.1:{cfg.port}{' '}
+          <button
+            type="button"
+            className="inline-flex items-center ml-1 text-muted-foreground hover:text-foreground align-middle"
+            onClick={restartServer}
+            disabled={restarting}
+            title="Restart the local trigger server (watchdog respawns it within ~1s)"
+          >
+            {restarting ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+          </button>
         </div>
         <div>
           Extension endpoint:{' '}
