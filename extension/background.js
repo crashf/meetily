@@ -10,7 +10,9 @@
 const DEFAULT_PORT = 7788;
 const JOIN_CONFIRM_MS = 3000;    // merged meeting-ish signals must persist this long
 const LEAVE_DEBOUNCE_MS = 8000;  // all-fresh-frames-dark before stopping
-const FRAME_STALE_MS = 70000;    // frame beacon older than this = frame gone/throttled
+const FRAME_STALE_MS = 150000;    // frame beacon older than this = frame gone/throttled
+                                 // (hidden tabs throttle to ~1 beacon/min — 70s tore
+                                 // meetings down whenever the tab was backgrounded)
 const GONE_SILENCE_MS = 240000;  // no beacon at all from an in-meeting tab => left
                                  // (tab throttling can slow beacons to ~60s; this must
                                  // also land before the app's 5-min heartbeat deadman)
@@ -159,7 +161,14 @@ async function recomputeTab(tabId, t) {
   }
   const sigs = [...t.frames.values()];
   if (!sigs.length) {
-    // No live frames: tab navigated off-domain or was discarded.
+    // No live frames. If the tab is still on a meeting URL this is a hidden/
+    // throttled tab (background beacons slow to ~60s) — keep meeting state and
+    // let the alarm's GONE_SILENCE_MS check decide abandonment. Tearing down
+    // here false-stopped recordings whenever the Meet tab was backgrounded.
+    if (t.meetingUrl) {
+      await persistTabs();
+      return;
+    }
     if (t.inMeeting) {
       dbg(`[tab ${tabId}] all detection frames gone -> LEAVE`);
       t.inMeeting = false;
