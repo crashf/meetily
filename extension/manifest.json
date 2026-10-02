@@ -1,10 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Meetily Auto-Record",
-  "version": "1.3.6",
+  "version": "1.3.7",
   "description": "Detects online meetings (Google Meet, Teams, Zoom) and tells the local Meetily app to start recording automatically. Debug notifications + logging built in.",
   "permissions": ["storage", "tabs", "alarms", "notifications", "webNavigation", "contextMenus", "scripting"],
-  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://teams.microsoft.com/*",
+    "https://teams.live.com/*",
+    "https://teams.cloud.microsoft/*",
+    "https://m365.cloud.microsoft/*"
+  ],
   "background": { "service_worker": "background.js" },
   "action": {
     "default_title": "Meetily Auto-Record",
