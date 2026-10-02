@@ -616,6 +616,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             auto_record::auto_record_get_status,
             auto_record::auto_record_set_config,
+            auto_record::debug::auto_record_get_diagnostics,
+            auto_record::debug::auto_record_test_notification,
+            auto_record::debug::auto_record_clear_diagnostics,
             start_recording,
             stop_recording,
             is_recording,

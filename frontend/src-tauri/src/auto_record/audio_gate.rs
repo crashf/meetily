@@ -217,6 +217,15 @@ fn default_meeting_title() -> String {
     chrono::Local::now().format("%b %d %H:%M").to_string()
 }
 
+/// Human-readable "alive" hint for the periodic gate log line (event recency).
+fn mic_alive_display(d: &Debounce) -> &'static str {
+    if d.events.is_empty() {
+        "no-events"
+    } else {
+        "ok"
+    }
+}
+
 async fn stop_gate_recording<R: Runtime>(app: &AppHandle<R>) {
     let save_path = crate::audio::recording_commands::get_meeting_folder_path()
         .await
@@ -275,11 +284,26 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
             last_cfg_check = now;
             mic.prune(now);
             sys.prune(now);
+            super::debug::debug_log(
+                &app,
+                "gate",
+                "info",
+                format!(
+                    "probe status: mode={} enabled={} mic={} sys={} threshold={:.3} (mic/sys: ok=events flowing, no-events=probe dead)",
+                    cached_cfg.mode,
+                    cached_cfg.enabled,
+                    mic_alive_display(&mic),
+                    mic_alive_display(&sys),
+                    cached_cfg.speech_threshold
+                ),
+            );
         }
 
         if !cached_cfg.enabled {
+            super::debug::sync_file_enabled(cached_cfg.debug_log_enabled);
             continue; // keep probes warm so re-enabling reacts instantly
         }
+        super::debug::sync_file_enabled(cached_cfg.debug_log_enabled);
 
         let mic_speech = mic.speech(START_WINDOW_MS, START_RATIO, now);
         let sys_speech = sys.speech(START_WINDOW_MS, START_RATIO, now);
@@ -301,6 +325,15 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
 
                 if !recording && gate_owns && probes_report && audio_speech && cached_cfg.auto_start_enabled {
                     log::info!("auto-record gate: sustained audio detected; starting recording");
+                    super::debug::debug_log(
+                        &app,
+                        "gate",
+                        "info",
+                        format!(
+                            "sustained audio detected (mic={} sys={}); starting recording",
+                            mic_speech, sys_speech
+                        ),
+                    );
                     emit_event(&app, "gate-trigger-start", serde_json::json!({"mic": mic_speech, "system": sys_speech}));
                     let session = SessionMeta {
                         meeting_name: format!("Auto-detected {}", default_meeting_title()),
@@ -312,11 +345,25 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
                     let name = session.meeting_name.clone();
                     *STATE.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
                     match crate::audio::recording_commands::start_recording_with_devices_and_meeting(
-                        app.clone(), None, None, Some(name),
+                        app.clone(), None, None, Some(name.clone()),
                     ).await {
-                        Ok(()) => emit_event(&app, "auto-record-started", serde_json::json!({"trigger": "audio-gate"})),
+                        Ok(()) => {
+                            super::debug::debug_log(&app, "gate", "info", "gate-started recording active".to_string());
+                            super::notify::notify(
+                                &app,
+                                "Recording started (audio detected)",
+                                &format!("{} — no browser trigger seen; using the audio gate", name),
+                            );
+                            emit_event(&app, "auto-record-started", serde_json::json!({"trigger": "audio-gate"}))
+                        }
                         Err(e) => {
                             log::error!("auto-record gate: start failed: {}", e);
+                            super::debug::debug_log(&app, "gate", "error", format!("gate start failed: {}", e));
+                            super::notify::notify(
+                                &app,
+                                "Auto-record failed to start",
+                                &format!("Audio gate trigger — {}", e),
+                            );
                             *STATE.session.lock().unwrap_or_else(|e| e.into_inner()) = None;
                         }
                     }
@@ -332,6 +379,12 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
                     if gate_started && probes_report {
                         if silence_duration(mic_speech, sys_speech) > Duration::from_millis(SILENCE_STOP_MS) {
                             log::info!("auto-record gate: sustained silence; stopping gate-started recording");
+                            super::debug::debug_log(
+                                &app,
+                                "gate",
+                                "info",
+                                format!("sustained silence {}s; stopping gate-started recording", SILENCE_STOP_MS / 1000),
+                            );
                             stop_gate_recording(&app).await;
                         }
                     }

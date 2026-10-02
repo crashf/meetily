@@ -1,11 +1,24 @@
 {
   "manifest_version": 3,
   "name": "Meetily Auto-Record",
-  "version": "1.0.0",
-  "description": "Detects online meetings (Google Meet, Teams, Zoom) and tells the local Meetily app to start recording automatically.",
-  "permissions": ["storage", "tabs", "alarms"],
+  "version": "1.1.0",
+  "description": "Detects online meetings (Google Meet, Teams, Zoom) and tells the local Meetily app to start recording automatically. Debug notifications + logging built in.",
+  "permissions": ["storage", "tabs", "alarms", "notifications"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "Meetily Auto-Record",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],
@@ -26,6 +39,19 @@
       "matches": ["https://*.zoom.us/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/48.png", "icons/128.png"],
+      "matches": [
+        "https://meet.google.com/*",
+        "https://teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://teams.cloud.microsoft/*",
+        "https://m365.cloud.microsoft/*",
+        "https://*.zoom.us/*"
+      ]
     }
   ],
   "options_page": "options.html"

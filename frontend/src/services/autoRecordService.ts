@@ -9,6 +9,10 @@ export interface AutoRecordConfig {
   token: string;
   speechThreshold: number;
   autoStartEnabled: boolean;
+  /** Native notifications for auto-record events (PUN-801). */
+  notifyEnabled: boolean;
+  /** Append diagnostics to app_data_dir/auto_record_debug.log (PUN-801). */
+  debugLogEnabled: boolean;
 }
 
 export interface AutoRecordSession {
@@ -19,6 +23,28 @@ export interface AutoRecordSession {
   last_heartbeat_ms: number;
 }
 
+export interface AutoRecordDebugEntry {
+  at: number;
+  source: string;
+  level: string;
+  message: string;
+}
+
+export interface AutoRecordDiagnostics {
+  config: {
+    enabled: boolean;
+    mode: string;
+    port: number;
+    tokenPrefix: string;
+    notifyEnabled: boolean;
+    debugLogEnabled: boolean;
+  };
+  serverRunning: boolean;
+  recording: boolean;
+  lastHeartbeatMsAgo: number | null;
+  logEntries: AutoRecordDebugEntry[];
+}
+
 export interface AutoRecordStatus {
   config: AutoRecordConfig;
   enabled: boolean;
@@ -26,6 +52,8 @@ export interface AutoRecordStatus {
   port: number;
   token: string;
   speechThreshold: number;
+  notifyEnabled: boolean;
+  debugLogEnabled: boolean;
   serverRunning: boolean;
   recording: boolean;
   session: AutoRecordSession | null;
@@ -40,6 +68,21 @@ export const autoRecordService = {
   /** Partial patch: any subset of AutoRecordConfig fields. */
   async setConfig(patch: Partial<AutoRecordConfig>): Promise<{ ok: boolean }> {
     return invoke<{ ok: boolean }>('auto_record_set_config', { patch });
+  },
+
+  /** Diagnostics snapshot: config echo + server state + ring-buffer log entries. */
+  async getDiagnostics(): Promise<AutoRecordDiagnostics> {
+    return invoke<AutoRecordDiagnostics>('auto_record_get_diagnostics');
+  },
+
+  /** Fire a native notification immediately (plumbing test). */
+  async testNotification(): Promise<{ ok: boolean }> {
+    return invoke<{ ok: boolean }>('auto_record_test_notification');
+  },
+
+  /** Clear the in-memory diagnostic ring. */
+  async clearDiagnostics(): Promise<{ ok: boolean }> {
+    return invoke<{ ok: boolean }>('auto_record_clear_diagnostics');
   },
 
   /** URL the Chrome extension should be pointed at (loopback). */

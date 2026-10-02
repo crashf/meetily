@@ -4,18 +4,30 @@
   <meta charset="utf-8" />
   <title>Meetily Auto-Record — Options</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 420px; margin: 24px auto; padding: 0 12px; }
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 24px auto; padding: 0 12px; }
     label { display: block; font-weight: 600; margin: 14px 0 4px; }
-    input { width: 100%; padding: 8px; box-sizing: border-box; }
+    input[type=number], input[type=text] { width: 100%; padding: 8px; box-sizing: border-box; }
     button { margin-top: 16px; padding: 8px 14px; }
     .status { margin-top: 12px; font-size: 14px; }
     .ok { color: #188038; } .bad { color: #c5221f; }
     small { color: #666; }
+    .toggle { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+    .toggle label { margin: 0; }
+    #logwrap { display: none; margin-top: 16px; }
+    #logwrap.show { display: block; }
+    pre#log {
+      background: #0f172a; color: #d1e5ff; font-size: 11px; line-height: 1.45;
+      padding: 10px; border-radius: 6px; max-height: 320px; overflow: auto; white-space: pre-wrap;
+    }
+    .tabbtn { margin: 0 8px 0 0; padding: 6px 10px; font-size: 13px; }
+    .tabbtn.active { background: #e8eaed; font-weight: 600; }
+    h3 { margin-top: 24px; }
   </style>
 </head>
 <body>
   <h2>Meetily Auto-Record</h2>
-  <p><small>Paste the token shown in Meetily → Settings → Preferences → Auto-record. Port must match the app's trigger server (default 7788).</small></p>
+  <p><small>Paste the token from Meetily → Settings → Preferences → Auto-record. Port must match the app's trigger server (default 7788).</small></p>
+
   <label for="port">Meetily port</label>
   <input id="port" type="number" value="7788" />
   <label for="token">Access token</label>
@@ -23,6 +35,23 @@
   <button id="save">Save</button>
   <button id="test">Test connection</button>
   <div id="status" class="status"></div>
+
+  <div class="toggle">
+    <input id="notify" type="checkbox" />
+    <label for="notify">Notifications (meeting detected / recording started / stopped / errors)</label>
+  </div>
+  <div class="toggle">
+    <input id="debug" type="checkbox" />
+    <label for="debug">Debug mode (verbose logging below + console output)</label>
+  </div>
+
+  <button id="copyLog">Copy debug log</button>
+  <div id="logwrap">
+    <h3>Live debug log</h3>
+    <p><small>Worker state machine + transport, then per-tab detection logs from any open meeting pages.</small></p>
+    <pre id="log">…</pre>
+  </div>
+
   <script src="options.js"></script>
 </body>
 </html>

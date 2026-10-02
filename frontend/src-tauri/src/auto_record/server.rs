@@ -146,9 +146,16 @@ async fn respond(stream: &mut TcpStream, status: u16, payload: &serde_json::Valu
 async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (u16, serde_json::Value) {
     match req.action.as_str() {
         "start" => {
+            super::debug::debug_log(
+                &app,
+                "trigger",
+                "info",
+                format!("POST /trigger start: platform={}, name={:?}", req.platform, req.meeting_name),
+            );
             let already = crate::audio::recording_commands::is_recording().await;
             if already {
                 info!("auto-record: start requested but recording already active (idempotent ok)");
+                super::debug::debug_log(&app, "trigger", "info", "start requested but recording already active (idempotent ok)".to_string());
                 emit_event(&app, "already-recording", serde_json::json!({"platform": req.platform}));
                 return (200, ok_json(Some(true)));
             }
@@ -182,6 +189,12 @@ async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (
             {
                 Ok(()) => {
                     STATE.recording_active.store(true, Ordering::SeqCst);
+                    super::debug::debug_log(&app, "trigger", "info", format!("recording started: '{}' ({})", meeting_name, req.platform));
+                    super::notify::notify(
+                        &app,
+                        "Recording started",
+                        &format!("{} — {} meeting", meeting_name, req.platform),
+                    );
                     emit_event(
                         &app,
                         "auto-record-started",
@@ -191,6 +204,12 @@ async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (
                 }
                 Err(e) => {
                     error!("auto-record: start failed: {}", e);
+                    super::debug::debug_log(&app, "trigger", "error", format!("start failed: {}", e));
+                    super::notify::notify(
+                        &app,
+                        "Auto-record failed to start",
+                        &format!("{} — {}", meeting_name, truncate_err(&e)),
+                    );
                     if let Some(s) = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).take() {
                         emit_event(
                             &app,
@@ -203,6 +222,7 @@ async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (
             }
         }
         "stop" => {
+            super::debug::debug_log(&app, "trigger", "info", "POST /trigger stop".to_string());
             let was_active = crate::audio::recording_commands::is_recording().await;
             let save_path = crate::audio::recording_commands::get_meeting_folder_path()
                 .await
@@ -212,24 +232,44 @@ async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (
             match crate::audio::recording_commands::stop_recording(app.clone(), args).await {
                 Ok(()) => {
                     let meta = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    let stopped_name = meta
+                        .as_ref()
+                        .map(|m| m.meeting_name.clone())
+                        .unwrap_or_default();
                     STATE.recording_active.store(false, Ordering::SeqCst);
                     if was_active {
                         info!("auto-record: stopped recording via extension trigger");
+                        super::debug::debug_log(&app, "trigger", "info", "recording stopped via extension trigger".to_string());
+                        super::notify::notify(
+                            &app,
+                            "Recording stopped & saved",
+                            &stopped_name,
+                        );
                         emit_event(
                             &app,
                             "auto-record-stopped",
-                            serde_json::json!({"meeting_name": meta.map(|m| m.meeting_name).unwrap_or_default()}),
+                            serde_json::json!({"meeting_name": stopped_name}),
                         );
                     }
                     (200, ok_json(Some(false)))
                 }
                 Err(e) => {
                     error!("auto-record: stop failed: {}", e);
+                    super::debug::debug_log(&app, "trigger", "error", format!("stop failed: {}", e));
                     (503, err_json(format!("failed to stop recording: {}", e)))
                 }
             }
         }
         other => (400, err_json(format!("unknown action: {}", other))),
+    }
+}
+
+fn truncate_err(e: &str) -> String {
+    let one_line = e.replace('\n', " ");
+    if one_line.chars().count() > 120 {
+        format!("{}…", one_line.chars().take(120).collect::<String>())
+    } else {
+        one_line
     }
 }
 
@@ -248,6 +288,7 @@ async fn handle_connection<R: Runtime>(app: AppHandle<R>, mut stream: TcpStream)
     };
 
     if parsed.method == "OPTIONS" {
+        super::debug::debug_log(&app, "server", "info", "OPTIONS preflight".to_string());
         respond(&mut stream, 200, &serde_json::json!({"ok": true})).await;
         return;
     }
@@ -257,6 +298,16 @@ async fn handle_connection<R: Runtime>(app: AppHandle<R>, mut stream: TcpStream)
     let expected = format!("Bearer {}", cfg.token);
     if parsed.authorization.as_deref() != Some(expected.as_str()) {
         warn!("auto-record: unauthorized request to {}", parsed.path);
+        super::debug::debug_log(
+            &app,
+            "server",
+            "warn",
+            format!(
+                "unauthorized request to {} (header {}) — token mismatch or missing; extension must paste the token from Meetily → Settings → Preferences → Auto-record",
+                parsed.path,
+                if parsed.authorization.is_some() { "present but wrong" } else { "absent" }
+            ),
+        );
         respond(&mut stream, 401, &err_json("unauthorized")).await;
         return;
     }
@@ -283,6 +334,7 @@ async fn handle_connection<R: Runtime>(app: AppHandle<R>, mut stream: TcpStream)
         }
         ("GET", "/ping") => {
             let rec = crate::audio::recording_commands::is_recording().await;
+            super::debug::debug_log(&app, "server", "info", format!("GET /ping -> recording={}", rec));
             respond(&mut stream, 200, &ok_json(Some(rec))).await;
         }
         _ => respond(&mut stream, 404, &err_json("not found")).await,
@@ -293,6 +345,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) -> ServerExit {
     let cfg = load_config(&app).await;
     if !cfg.enabled {
         info!("auto-record: disabled; trigger server not started");
+        super::debug::debug_log(&app, "server", "info", "auto-record disabled; trigger server not started".to_string());
         return ServerExit::DisabledAtBoot;
     }
 
@@ -301,6 +354,14 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) -> ServerExit {
         Ok(l) => l,
         Err(e) => {
             error!("auto-record: failed to bind {}: {}", addr, e);
+            super::debug::debug_log(&app, "server", "error", format!("failed to bind {}: {}", addr, e));
+            super::notify::notify_throttled(
+                &app,
+                "bind-fail",
+                10 * 60_000,
+                "Meetily trigger server down",
+                &format!("Meetily could not listen on {} — the browser extension cannot trigger recording. ({})", addr, e),
+            );
             emit_event(
                 &app,
                 "server-error",
@@ -312,6 +373,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) -> ServerExit {
 
     STATE.server_running.store(true, Ordering::SeqCst);
     info!("auto-record: trigger server listening on {}", addr);
+    super::debug::debug_log(&app, "server", "info", format!("trigger server listening on {}", addr));
     emit_event(&app, "server-started", serde_json::json!({"port": cfg.port}));
 
     loop {

@@ -10,6 +10,8 @@ use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
 
 pub mod audio_gate;
+pub mod debug;
+pub mod notify;
 pub mod server;
 pub mod watchdog;
 
@@ -36,6 +38,12 @@ pub struct AutoRecordConfig {
     pub speech_threshold: f32,
     #[serde(default = "default_true")]
     pub auto_start_enabled: bool,
+    /// Native notifications for auto-record events (started/stopped/errors). PUN-801.
+    #[serde(default = "default_true")]
+    pub notify_enabled: bool,
+    /// Append auto-record diagnostics to app_data_dir/auto_record_debug.log. PUN-801.
+    #[serde(default)]
+    pub debug_log_enabled: bool,
 }
 
 fn default_mode() -> String {
@@ -60,6 +68,8 @@ impl Default for AutoRecordConfig {
             token: String::new(),
             speech_threshold: default_speech_threshold(),
             auto_start_enabled: true,
+            notify_enabled: true,
+            debug_log_enabled: false,
         }
     }
 }
@@ -138,6 +148,9 @@ pub async fn load_config<R: Runtime>(app: &AppHandle<R>) -> AutoRecordConfig {
     if generated || !had_stored_config {
         save_config(app, &cfg).await;
     }
+    // Keep the debug-log file toggle in sync with the store (cheap atomic mirror).
+    debug::sync_file_enabled(cfg.debug_log_enabled);
+    notify::sync_flags(cfg.notify_enabled);
     cfg
 }
 
@@ -177,6 +190,8 @@ pub async fn auto_record_get_status<R: Runtime>(app: AppHandle<R>) -> Result<ser
         "port": cfg.port,
         "token": cfg.token,
         "speechThreshold": cfg.speech_threshold,
+        "notifyEnabled": cfg.notify_enabled,
+        "debugLogEnabled": cfg.debug_log_enabled,
         "serverRunning": STATE.server_running.load(Ordering::SeqCst),
         "recording": rec,
         "session": session,
@@ -242,6 +257,8 @@ mod tests {
         assert!(c.token.is_empty(), "token generated later, not in Default");
         assert!(c.speech_threshold > 0.0 && c.speech_threshold < 1.0);
         assert!(c.auto_start_enabled);
+        assert!(c.notify_enabled, "notifications should default on (PUN-801)");
+        assert!(!c.debug_log_enabled, "debug file log should default off (privacy)");
     }
 
     #[test]

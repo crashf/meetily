@@ -32,6 +32,22 @@ pub async fn heartbeat_monitor<R: Runtime>(app: AppHandle<R>) {
                 "auto-record: extension heartbeat silent {}ms; stopping orphaned recording '{}'",
                 stale_ms, session.meeting_name
             );
+            super::debug::debug_log(
+                &app,
+                "watchdog",
+                "warn",
+                format!(
+                    "extension heartbeat silent {}ms (last beat older than {} min); stopping orphaned recording '{}'",
+                    stale_ms,
+                    HEARTBEAT_DEADMAN_MS / 60_000,
+                    session.meeting_name
+                ),
+            );
+            super::notify::notify(
+                &app,
+                "Recording stopped (browser silent)",
+                &format!("No heartbeat from the meeting for {} min — saved '{}'. If the meeting was still live, the extension lost connection.", HEARTBEAT_DEADMAN_MS / 60_000, session.meeting_name),
+            );
             let save_path = crate::audio::recording_commands::get_meeting_folder_path()
                 .await
                 .unwrap_or(None)
