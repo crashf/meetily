@@ -187,21 +187,24 @@ async function recomputeTab(tabId, t) {
   const anyMediaNoLobby = sigs.some((s) => s.media && !s.lobby);
   const meetingish = t.meetingUrl && (anyJoined || anyMediaNoLobby || forceEnabled);
 
-  if (t.inMeeting) {
-    // Server heartbeat flows from the 15s alarm (recompute runs every 2s per
-    // beacon — calling the server from here would spam it 30x more often).
-  } else if (meetingish) {
-    if (!t.meetingSince) t.meetingSince = now;
-    if (now - t.meetingSince > JOIN_CONFIRM_MS) {
-      t.inMeeting = true;
-      dbg(`[tab ${tabId}] JOIN confirmed (url=${t.meetingUrl} leaveBtn=${anyJoined} mediaNoLobby=${anyMediaNoLobby}${forceEnabled ? ' +forceBypass' : ''})`);
-      await persistTabs();
-      notify('Meeting detected', `${tabInfo(t).meetingName} on ${t.platform || 'meeting'} — starting auto-record.`);
-      if (!meetingAny(tabId)) await startMeeting(tabInfo(t));
-      setBadge('REC', '#188038');
-      scheduleHeartbeat();
-    } else {
-      if (!t.joinLogged) { dbg(`[tab ${tabId}] meeting-ish signal seen, confirming in ${JOIN_CONFIRM_MS}ms`); t.joinLogged = true; }
+  if (meetingish) {
+    // Fresh positive evidence cancels a pending leave debounce. When already in
+    // a meeting, keep state; when not, require the normal confirmation window.
+    t.offSince = 0;
+    if (!t.inMeeting) {
+      if (!t.meetingSince) t.meetingSince = now;
+      if (now - t.meetingSince > JOIN_CONFIRM_MS) {
+        t.inMeeting = true;
+        dbg(`[tab ${tabId}] JOIN confirmed (url=${t.meetingUrl} leaveBtn=${anyJoined} mediaNoLobby=${anyMediaNoLobby}${forceEnabled ? ' +forceBypass' : ''})`);
+        await persistTabs();
+        notify('Meeting detected', `${tabInfo(t).meetingName} on ${t.platform || 'meeting'} — starting auto-record.`);
+        if (!meetingAny(tabId)) await startMeeting(tabInfo(t));
+        setBadge('REC', '#188038');
+        scheduleHeartbeat();
+      } else if (!t.joinLogged) {
+        dbg(`[tab ${tabId}] meeting-ish signal seen, confirming in ${JOIN_CONFIRM_MS}ms`);
+        t.joinLogged = true;
+      }
     }
   } else {
     t.meetingSince = 0;
