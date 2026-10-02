@@ -20,6 +20,33 @@ const HEARTBEAT_SEND_MS = 12000; // worker-side heartbeat throttle
 const ALARM_HEARTBEAT = 'meetily-hb';
 const DOMAIN_RE =
   /(meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|teams\.cloud\.microsoft|m365\.cloud\.microsoft|([a-z0-9-]+\.)*zoom\.us)$/i;
+const TEAMS_HOST_RE = /(^|\.)(teams\.microsoft\.com|teams\.live\.com|teams\.cloud\.microsoft|m365\.cloud\.microsoft)$/i;
+
+// Teams SPA tabs may remain open across extension reloads and have no content
+// script until navigation. On worker startup, explicitly inspect/inject Teams
+// only; Google Meet's existing manifest-driven path remains unchanged.
+async function discoverOpenTeamsTabs(reason) {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: ['https://teams.microsoft.com/*', 'https://teams.live.com/*', 'https://teams.cloud.microsoft/*', 'https://m365.cloud.microsoft/*'] }); }
+  catch (e) { dbg(`Teams tab discovery query failed (${reason}): ${e}`); return; }
+  dbg(`Teams tab discovery (${reason}): ${tabs.length} matching tab(s)`);
+  for (const tab of tabs) {
+    if (!tab.id || !tab.url) continue;
+    let host = '';
+    try { host = new URL(tab.url).hostname; } catch (_) { continue; }
+    if (!TEAMS_HOST_RE.test(host)) continue;
+    try {
+      const results = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['content.js'] });
+      dbg(`[tab ${tab.id}] Teams diagnostic injection requested; frames=${results?.length ?? 0} url=${tab.url.slice(0, 100)}`);
+    } catch (e) {
+      dbg(`[tab ${tab.id}] Teams content-script injection failed: ${e && e.message ? e.message : e}`);
+    }
+  }
+}
+chrome.runtime.onInstalled.addListener(() => { void discoverOpenTeamsTabs('onInstalled'); });
+chrome.runtime.onStartup.addListener(() => { void discoverOpenTeamsTabs('startup'); });
+chrome.runtime.onInstalled.addListener(() => { setTimeout(() => void discoverOpenTeamsTabs('post-install'), 1200); });
+chrome.runtime.onStartup.addListener(() => { setTimeout(() => void discoverOpenTeamsTabs('post-startup'), 1200); });
 
 // ---- config ----------------------------------------------------------------
 async function getConfig() {
@@ -404,6 +431,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const matches = chrome.runtime.getManifest().content_scripts.flatMap((cs) => cs.matches);
       let query = [];
       try { query = await chrome.tabs.query({ url: matches }); } catch (_) {}
+      // Always include supported Teams tabs explicitly, even when a stale Chrome
+      // content-script registration failed to inject after an extension update.
+      let teamsTabs = [];
+      try { teamsTabs = await chrome.tabs.query({ url: ['https://teams.microsoft.com/*', 'https://teams.live.com/*', 'https://teams.cloud.microsoft/*', 'https://m365.cloud.microsoft/*'] }); } catch (_) {}
+      const byId = new Map([...query, ...teamsTabs].map((tab) => [tab.id, tab]));
+      query = [...byId.values()];
       const found = [];
       await Promise.all(
         query.map(async (t) => {
