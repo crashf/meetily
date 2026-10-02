@@ -1,5 +1,7 @@
 const $ = (id) => document.getElementById(id);
 
+const stamp = (ms) => new Date(ms).toISOString().slice(11, 23);
+
 async function restore() {
   const { port = 7788, token = '', debugMode = false, notify = true } =
     await chrome.storage.local.get(['port', 'token', 'debugMode', 'notify']);
@@ -72,7 +74,6 @@ $('test').addEventListener('click', async () => {
 let lastSnapshot = '';
 function render(found) {
   const lines = [];
-  const stamp = (ms) => new Date(ms).toISOString().slice(11, 23);
   for (const tab of found || []) {
     lines.push(`── tab ${tab.tabId} · ${tab.url?.slice(0, 100) || '?'} · state=${tab.state}`);
     lines.push(...(tab.log || []).slice(-60));
