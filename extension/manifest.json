@@ -13,7 +13,12 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://teams.microsoft.com/*", "https://teams.live.com/*"],
+      "matches": [
+        "https://teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://teams.cloud.microsoft/*",
+        "https://m365.cloud.microsoft/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     },

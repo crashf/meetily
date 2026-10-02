@@ -17,7 +17,8 @@
   ];
 
   const isGoogleMeet = () => location.hostname === 'meet.google.com';
-  const isTeams = () => location.hostname.endsWith('teams.microsoft.com') || location.hostname.endsWith('teams.live.com');
+  const isTeams = () =>
+    /(^|\.)(teams\.microsoft\.com|teams\.live\.com|teams\.cloud\.microsoft|m365\.cloud\.microsoft)$/i.test(location.hostname);
   const isZoom = () => location.hostname.endsWith('zoom.us');
   const platform = () => (isGoogleMeet() ? 'google_meet' : isTeams() ? 'teams' : isZoom() ? 'zoom' : 'unknown');
 
@@ -66,7 +67,16 @@
     chrome.runtime.sendMessage({ kind, platform: platform(), tabId: 'cs', ...extra }).catch(() => {});
   }
 
+  // Debug tap: window.__meetilyLog (array) + window.__meetilyTick() to run one
+  // detection pass on demand from DevTools; dump it in bug reports.
+  window.__meetilyLog = [];
+  const dbg = (m) => {
+    window.__meetilyLog.push(`${new Date().toISOString().slice(11, 19)} ${m}`);
+    if (window.__meetilyLog.length > 400) window.__meetilyLog.shift();
+  };
+
   function tick() {
+    dbg(`state=${state} leaveVisible=${leaveButtonVisible()} pathOk=${inMeetingPath()}`);
     const joined = leaveButtonVisible();
     const pathOk = inMeetingPath();
 
@@ -107,6 +117,8 @@
     }
   }
   tick.absentSince = 0;
+  window.__meetilyTick = tick;
+  dbg('content script loaded on ' + location.hostname);
 
   // Observe DOM + URL changes; poll as fallback every 2s (cheap: selector scan only).
   setInterval(tick, 2000);
