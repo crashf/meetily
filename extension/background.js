@@ -212,7 +212,11 @@ async function recomputeTab(tabId, t) {
 
   const anyJoined = sigs.some((s) => s.joined);
   const anyMediaNoLobby = sigs.some((s) => s.media && !s.lobby);
-  const meetingish = t.meetingUrl && (anyJoined || anyMediaNoLobby || forceEnabled);
+  // Teams keeps active calls inside its SPA root (field evidence: visible
+  // "Leave" control at teams.cloud.microsoft/). This provider-specific signal
+  // may join without a meeting URL. Google Meet and Zoom keep their URL gate.
+  const teamsInCall = t.platform === 'teams' && anyJoined;
+  const meetingish = (t.meetingUrl && (anyJoined || anyMediaNoLobby || forceEnabled)) || teamsInCall;
 
   if (t.inMeeting) {
     // Server heartbeat flows from the 15s alarm (recompute runs every 2s per
