@@ -232,7 +232,7 @@ export function AutoRecordSettings() {
             </div>
             <p className="text-xs text-muted-foreground -mt-2">
               Appends every auto-record event to{' '}
-              <code className="text-[10px]">AppData\Roaming\com.mediar-ai\meetily\auto_record_debug.log</code>{' '}
+              <code className="text-[10px]">AppData\Roaming\com.meetily.ai\auto_record_debug.log</code>{' '}
               (rotates at 1 MB).
             </p>
 
