@@ -218,7 +218,28 @@ async function recomputeTab(tabId, t) {
   const teamsInCall = t.platform === 'teams' && anyJoined;
   const meetingish = (t.meetingUrl && (anyJoined || anyMediaNoLobby || forceEnabled)) || teamsInCall;
 
-  if (t.inMeeting) {
+  // Teams stays at its SPA root for both active calls and the post-call shell;
+  // its explicit Leave control is therefore the call-state signal. Debounce its
+  // disappearance independently so Teams can stop without changing Meet logic.
+  if (t.platform === 'teams' && t.inMeeting) {
+    if (teamsInCall) {
+      t.offSince = 0;
+    } else if (!t.offSince) {
+      t.offSince = now;
+      dbg(`[tab ${tabId}] Teams in-call signal went dark, ${LEAVE_DEBOUNCE_MS / 1000}s leave debounce started`);
+    } else if (now - t.offSince > LEAVE_DEBOUNCE_MS) {
+      t.inMeeting = false;
+      t.offSince = 0;
+      dbg(`[tab ${tabId}] Teams LEAVE after ${LEAVE_DEBOUNCE_MS / 1000}s dark`);
+      await persistTabs();
+      if (!meetingAny() && !forcedActive) await stopMeeting('Left Teams meeting');
+    }
+  } else if (t.platform === 'teams' && !t.inMeeting && !teamsInCall) {
+    // Teams app shell has no URL signal. A dark Leave signal must reset join
+    // confirmation so the resurrect path cannot restart after the call ended.
+    t.meetingSince = 0;
+    t.joinLogged = false;
+  } else if (t.inMeeting) {
     // Server heartbeat flows from the 15s alarm (recompute runs every 2s per
     // beacon — calling the server from here would spam it 30x more often).
   } else if (meetingish) {
