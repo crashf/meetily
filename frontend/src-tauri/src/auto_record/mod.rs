@@ -114,6 +114,10 @@ pub fn now_ms() -> u64 {
 }
 
 pub async fn load_config<R: Runtime>(app: &AppHandle<R>) -> AutoRecordConfig {
+    let had_stored_config = match app.store(STORE_FILE) {
+        Ok(store) => store.get("config").is_some(),
+        Err(_) => false,
+    };
     let mut cfg = match app.store(STORE_FILE) {
         Ok(store) => match store.get("config") {
             Some(value) => serde_json::from_value(value.clone()).unwrap_or_default(),
@@ -127,7 +131,13 @@ pub async fn load_config<R: Runtime>(app: &AppHandle<R>) -> AutoRecordConfig {
             AutoRecordConfig::default()
         }
     };
+    let generated = cfg.token.is_empty();
     cfg.ensure_token();
+    // Persist immediately on first run so the extension can pair with the
+    // token from disk (settings UI or the store file) without a save action.
+    if generated || !had_stored_config {
+        save_config(app, &cfg).await;
+    }
     cfg
 }
 
