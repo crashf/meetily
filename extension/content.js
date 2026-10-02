@@ -217,6 +217,11 @@
 
   function tick() {
     beat++;
+    // MutationObserver-driven ticks can fire many times/sec on Meet; beacon at
+    // most every 1.5s (worker recompute is per-beacon).
+    const nowMs = Date.now();
+    if (nowMs - (tick.lastSentAt || 0) < 1500) return;
+    tick.lastSentAt = nowMs;
     const g = gather();
     dbg(`beacon pathOk=${g.pathOk} leave=${g.joined} media=${g.media} lobby=${g.lobby} top=${g.isTop} (probe: light=${probeState.lightMatches} vis=${probeState.visibleMatches} shadow=${probeState.shadowRoots}r/${probeState.shadowMatches}m "${probeState.sampleLabel}")`);
     // Census while a meeting URL is open but this frame shows no in-call signal —
