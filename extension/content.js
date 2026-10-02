@@ -83,18 +83,119 @@
   }
 
   let selectorHits = {}; // selector -> count this session (debug visibility)
+  // Probe telemetry: what the DOM actually contains when we can't see a leave button.
+  const probeState = { lightMatches: 0, visibleMatches: 0, shadowRoots: 0, shadowMatches: 0, sampleLabel: '', lastDeepAt: 0 };
+
+  // Visibility that works for fixed/sticky controls and shadow trees: offsetParent
+  // is null for position:fixed elements (Meet's control bar!) even when fully visible,
+  // which made v1.0/v1.1 reject the live leave button. FIX (PUN-801 field log 2:
+  // leaveVisible=false for an entire real meeting). Rects + computed style instead.
+  function isReallyVisible(n) {
+    try {
+      if (!(n instanceof Element)) return false;
+      const rects = n.getClientRects();
+      if (!rects.length) return false;
+      const r = n.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return false;
+      const st = getComputedStyle(n);
+      if (st.visibility === 'hidden' || st.display === 'none') return false;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Deep query across open AND closed shadow roots. chrome.dom.openOrClosedShadowRoot
+  // is available to extension content scripts; el.shadowRoot covers open roots.
+  // Expensive (host walk) — time-gated to once per 15s by the caller.
+  function deepQueryAll(selector, maxHosts = 300) {
+    const results = [];
+    const seenRoots = new Set();
+    const queue = [document];
+    let shadowRoots = 0;
+    const hostIsOpen = !!window.chrome?.dom?.openOrClosedShadowRoot;
+    while (queue.length && shadowRoots < maxHosts) {
+      const root = queue.shift();
+      try { results.push(...root.querySelectorAll(selector)); } catch (_) {}
+      let hosts = [];
+      try { hosts = root.querySelectorAll('*'); } catch (_) {}
+      for (const el of hosts) {
+        let sr = null;
+        try { sr = el.shadowRoot; } catch (_) {}
+        if (!sr && hostIsOpen) {
+          try { sr = window.chrome.dom.openOrClosedShadowRoot(el); } catch (_) {}
+        }
+        if (sr && !seenRoots.has(sr)) {
+          seenRoots.add(sr);
+          shadowRoots++;
+          queue.push(sr);
+        }
+      }
+    }
+    probeState.shadowRoots = shadowRoots;
+    return results;
+  }
+
   function leaveButtonVisible() {
+    let lightMatches = 0;
+    let visible = 0;
+    let shadowMatches = 0;
+    let sampleLabel = '';
     for (const sel of LEAVE_SELECTORS) {
       try {
-        const nodes = document.querySelectorAll(sel);
+        let nodes = document.querySelectorAll(sel);
+        lightMatches += nodes.length;
+        if (nodes.length === 0 && Date.now() - probeState.lastDeepAt > 15000) {
+          probeState.lastDeepAt = Date.now();
+          nodes = deepQueryAll(sel); // shadow pierce, throttled
+          shadowMatches += nodes.length;
+        }
         for (const n of nodes) {
-          const r = n.getBoundingClientRect();
-          if (r.width > 0 && r.height > 0 && n.offsetParent !== null) {
+          if (isReallyVisible(n)) {
+            if (!sampleLabel) {
+              sampleLabel = n.getAttribute('aria-label') || n.getAttribute('data-tooltip') || n.id || sel.slice(0, 40);
+            }
             selectorHits[sel] = (selectorHits[sel] || 0) + 1;
+            probeState.visibleMatches = 1;
+            probeState.sampleLabel = sampleLabel;
             return true;
           }
         }
       } catch (_) { /* invalid selector on older chromium */ }
+    }
+    // Record probe stats when nothing found (throttled reporter logs these).
+    probeState.lightMatches = lightMatches;
+    probeState.visibleMatches = visible;
+    probeState.shadowMatches = shadowMatches;
+    if (!sampleLabel) probeState.sampleLabel = sampleLabel;
+    return false;
+  }
+
+  // Live video signal (redundancy net for leave-button selector rot): Google Meet's
+  // in-call UI always renders <video> elements with actual dimensions. Green room
+  // may too (camera preview) — that's why this never acts alone: lobby detection
+  // below suppresses it, and the 3s join-confirm applies regardless.
+  function mediaPlaying() {
+    for (const v of document.querySelectorAll('video')) {
+      if ((v.videoWidth || 0) > 0 && (v.videoHeight || 0) > 0 && isReallyVisible(v)) return true;
+    }
+    return false;
+  }
+
+  // Meet green-room suppressor: visible "Join now"/"Ask to join" = still a lobby,
+  // even if pathOk/video already true. Prevents recording the green room.
+  function lobbyVisible() {
+    for (const sel of [
+      'button[data-jsname="join-button"], div[role="button"][data-jsname="join-button"]',
+      'button[aria-label*="Join now" i], div[role="button"][aria-label*="Join now" i]',
+      'button[aria-label*="Ask to join" i], div[role="button"][aria-label*="Ask to join" i]',
+      'button[data-mdc-dialog-button]', // generic Meet dialog confirm
+    ]) {
+      try {
+        for (const n of document.querySelectorAll(sel)) {
+          if (isReallyVisible(n)) return true;
+        }
+      } catch (_) {}
     }
     return false;
   }
@@ -112,24 +213,27 @@
   }
 
   function tick() {
-    dbg(`state=${state} leaveVisible=${leaveButtonVisible()} pathOk=${inMeetingPath()}`);
     const joined = leaveButtonVisible();
     const pathOk = inMeetingPath();
+    const media = mediaPlaying();
+    const lobby = lobbyVisible();
+    const inCallSignal = joined || (media && !lobby);
+    dbg(`state=${state} leaveVisible=${joined} pathOk=${pathOk} media=${media} lobby=${lobby} (probe: light=${probeState.lightMatches} vis=${probeState.visibleMatches} shadow=${probeState.shadowRoots}r/${probeState.shadowMatches}m "${probeState.sampleLabel}")`);
 
     if (state === 'IDLE') {
-      if (pathOk && joined) {
+      if (pathOk && inCallSignal) {
         if (joinSeenAt === 0) {
           joinSeenAt = Date.now();
           state = 'JOINING';
-          dbg('JOINING: leave button + meeting URL seen, confirming ~3s');
-          sendDebugTick('joining', { url: location.href, pathOk, joined, title: document.title });
+          dbg(`JOINING: ${joined ? 'leave button' : 'live media (no lobby)'} + meeting URL seen, confirming ~3s`);
+          sendDebugTick('joining', { url: location.href, pathOk, joined, media, lobby, title: document.title });
         }
       } else {
         joinSeenAt = 0;
-        if (pathOk && !joined) dbg('IDLE: meeting URL but no leave button visible yet (lobby?)');
+        if (pathOk && !inCallSignal) dbg('IDLE: meeting URL but no in-call signal yet (lobby?)');
       }
     } else if (state === 'JOINING') {
-      if (joined && pathOk) {
+      if (inCallSignal && pathOk) {
         if (Date.now() - joinSeenAt > 3000) {
           state = 'IN_MEETING';
           send('JOIN', { meeting_name: meetingTitle() });
@@ -143,7 +247,7 @@
         dbg('JOINING timed out (30s) — back to IDLE');
       }
     } else if (state === 'IN_MEETING') {
-      if (joined && pathOk) {
+      if (inCallSignal && pathOk) {
         send('HEARTBEAT');
         tick.absentSince = 0;
       } else {
@@ -163,7 +267,7 @@
   }
   tick.absentSince = 0;
   window.__meetilyTick = tick;
-  dbg(`content script v1.1 loaded on ${location.hostname} (platform=${platform()})`);
+  dbg(`content script v1.1.2 loaded on ${location.hostname} (platform=${platform()})`);
   sendDebugTick('script-loaded', { url: location.href, title: document.title });
 
   // DevTools helpers for bug reports:
