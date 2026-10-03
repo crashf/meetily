@@ -147,7 +147,7 @@ export default function AnalyticsConsentSwitch() {
 
   const handlePrivacyPolicyClick = async () => {
     try {
-      await invoke('open_external_url', { url: 'https://github.com/Zackriya-Solutions/meeting-minutes/blob/main/PRIVACY_POLICY.md' });
+      await invoke('open_external_url', { url: 'https://github.com/Zackriya-Solutions/meetily/blob/main/PRIVACY_POLICY.md' });
     } catch (error) {
       console.error('Failed to open privacy policy link:', error);
     }
@@ -159,7 +159,7 @@ export default function AnalyticsConsentSwitch() {
         <div>
           <h3 className="text-base font-semibold text-gray-800 mb-2">Usage Analytics</h3>
           <p className="text-sm text-gray-600 mb-4">
-            Usage analytics is off by default. You can turn it on to share anonymous product and performance data; no personal content is collected.
+            Usage analytics is off by default. You can turn it on to share pseudonymous usage and performance metadata, not meeting content.
           </p>
         </div>
 
@@ -230,7 +230,7 @@ export default function AnalyticsConsentSwitch() {
               onClick={handlePrivacyPolicyClick}
               className="text-blue-600 hover:text-blue-800 underline hover:no-underline"
             >
-              View Upstream Privacy Policy
+              View Upstream Privacy Policy (not a Pund-IT policy)
             </button>
           </div>
         </div>

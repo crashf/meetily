@@ -1,6 +1,6 @@
 # Pund-IT Meeting Assistant — privacy and data handling
 
-Updated: 2026-10-03. This document describes this fork's data paths, not a guarantee of compliance or complete offline operation.
+Updated: 2026-10-03. This technical data-handling notice describes observable paths in this fork. It is not an approved Pund-IT legal privacy policy or a guarantee of compliance or complete offline operation. The in-app upstream policy link identifies a separate upstream document, not this notice.
 
 ## Recording and local storage
 

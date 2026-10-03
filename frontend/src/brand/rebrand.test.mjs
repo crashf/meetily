@@ -14,7 +14,7 @@ const allowed = new Map([
   ['components/MeetingDetails/MeetingDetailsSplitView.tsx', ['meetily.meetingDetails.transcriptPaneRatio']],
   ['components/AutoRecordSettings.tsx', ['com.meetily.ai']],
   ['components/About.tsx', ['Based on Meetily by Zackriya Solutions (MIT)']],
-  ['components/AnalyticsConsentSwitch.tsx', ['https://github.com/Zackriya-Solutions/meeting-minutes/blob/main/PRIVACY_POLICY.md']],
+  ['components/AnalyticsConsentSwitch.tsx', ['https://github.com/Zackriya-Solutions/meetily/blob/main/PRIVACY_POLICY.md']],
   ['components/DatabaseImport/HomebrewDatabaseDetector.tsx', ['/var/meetily/', 'Legacy Meetily Data Detected', 'previous Meetily installation']],
   ['components/DatabaseImport/LegacyDatabaseImport.tsx', ['select the Meetily folder', 'previous Meetily installation', 'previous Meetily folder']],
 ]);
@@ -63,4 +63,11 @@ test('privacy copy qualifies external summaries and network downloads', () => {
   const welcome = read('src/components/onboarding/steps/WelcomeStep.tsx');
   for (const text of ['Recording and transcription run on your device', 'Local models work offline after download', 'External summary providers receive transcript content', 'Model downloads and updates require network access', 'is off by default']) assert.ok(welcome.includes(text), text);
   assert.ok(read('src/components/AnalyticsConsentSwitch.tsx').includes('transcript content is sent to that provider'));
+});
+
+test('privacy link identifies the verified upstream document without inventing a fork policy', () => {
+  const source = read('src/components/AnalyticsConsentSwitch.tsx');
+  assert.ok(source.includes('https://github.com/Zackriya-Solutions/meetily/blob/main/PRIVACY_POLICY.md'));
+  assert.ok(source.includes('not a Pund-IT policy'));
+  assert.ok(source.includes('pseudonymous'));
 });
