@@ -1,3 +1,4 @@
+import { UPSTREAM_PRIVACY_POLICY_URL } from '@/brand/config';
 import React, { useContext, useState, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -147,7 +148,7 @@ export default function AnalyticsConsentSwitch() {
 
   const handlePrivacyPolicyClick = async () => {
     try {
-      await invoke('open_external_url', { url: 'https://github.com/Zackriya-Solutions/meetily/blob/main/PRIVACY_POLICY.md' });
+      await invoke('open_external_url', { url: UPSTREAM_PRIVACY_POLICY_URL });
     } catch (error) {
       console.error('Failed to open privacy policy link:', error);
     }

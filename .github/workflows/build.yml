@@ -699,6 +699,12 @@ jobs:
             target/${{ inputs.target }}/${{ steps.build-profile.outputs.profile }}/bundle/macos/*.app.tar.gz.sig
           retention-days: 30
 
+      - name: Validate branded source and generated HTML
+        if: inputs.branded-delivery
+        shell: bash
+        run: |
+          node --test frontend/src/brand/rebrand.test.mjs frontend/src/brand/generated-html.test.mjs frontend/src-tauri/tests/branding-invariants.test.cjs .github/stage-branded-installers.test.cjs
+
       - name: Install FUSE for AppImage processing
         if: contains(inputs.platform, 'ubuntu')
         run: |
