@@ -19,7 +19,7 @@ gh workflow run 372658384 --repo crashf/meetily --ref pundit/meeting-assistant-r
 gh api 'repos/crashf/meetily/actions/workflows/372658384/runs?branch=pundit%2Fmeeting-assistant-rebrand&per_page=5' --jq '.workflow_runs[] | {id,head_sha,status,conclusion,html_url}'
 ```
 
-Use the existing authorized operator environment; internal access instructions are maintained privately, not in public source. Before dispatch, verify the remote branch SHA equals the reviewed full SHA and check for an existing matching run. Do not duplicate builds. Require the selected run's `headSha` to equal that separately approved SHA. No default-branch changes or new credentials are needed for this route.
+Use the existing authorized operator environment; internal access instructions are maintained privately, not in public source. Before dispatch, verify the remote branch SHA equals the reviewed full SHA and check for an existing matching run. Do not duplicate builds. Require the selected run's `head_sha` to equal that separately approved SHA. No default-branch changes or new credentials are needed for this route.
 
 ```bash
 gh run view RUN_ID --repo crashf/meetily --json status,conclusion,headSha,jobs,url
@@ -37,3 +37,7 @@ Require terminal success including Windows. Verify original artifact ZIP against
 4. Verify terminal Windows CI, unique artifact provenance, hashes and actual signature state.
 5. Complete [fresh install and upgrade/data preservation](UPGRADE_TEST.md), including browser pairing and diagnostic/console checks.
 6. Deliver only the selected approved test installer; retain old installer and data backups. Normal release replacement requires separate explicit approval.
+
+## Retained upstream updater
+
+This controlled test preserves the existing upstream updater endpoint and public key for compatibility. It does not establish a Pund-IT update channel: accepting an upstream update may replace this branded test build. Do not accept an upstream update during controlled acceptance testing; record the installed executable hash before and after testing. Changing or disabling the updater requires a separately reviewed release-policy decision, not an implicit rebrand change.

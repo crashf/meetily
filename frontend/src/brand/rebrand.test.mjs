@@ -23,7 +23,7 @@ function walk(dir) {
 }
 test('every legacy source reference is explicitly justified by compatibility or attribution', () => {
   for (const file of walk(src).filter(p => /\.tsx?$/.test(p))) {
-    const name = relative(src, file);
+    const name = relative(src, file).replaceAll('\\', '/');
     for (const line of readFileSync(file, 'utf8').split('\n')) {
       if (/meetily|zackriya/i.test(line)) assert.ok((allowed.get(name) || []).some(value => line.includes(value)), `${name}: ${line}`);
     }
