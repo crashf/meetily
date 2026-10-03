@@ -24,7 +24,11 @@ Use the existing authorized operator environment; internal access instructions a
 ```bash
 gh run view RUN_ID --repo crashf/meetily --json status,conclusion,headSha,jobs,url
 gh api repos/crashf/meetily/actions/runs/RUN_ID/artifacts --jq '.artifacts[] | {id,name,size_in_bytes,digest,expired}'
-gh run download RUN_ID --repo crashf/meetily --name ARTIFACT_NAME --dir NEW_EMPTY_DIRECTORY
+gh api repos/crashf/meetily/actions/artifacts/ARTIFACT_ID/zip > artifact.zip
+sha256sum artifact.zip
+# Require this SHA-256 to match the selected artifact API digest (sha256:...).
+# Only after that comparison succeeds:
+unzip artifact.zip -d NEW_EMPTY_DIRECTORY
 ```
 
 Require terminal success including Windows. Verify original artifact ZIP against the API digest, manifest file hashes, installer hash and extracted `meetily.exe` hash. Extracting a payload is not Windows execution or upgrade acceptance. Historical successful builds are route evidence only, not evidence that this rebrand builds or runs.
