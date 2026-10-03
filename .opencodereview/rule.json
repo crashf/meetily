@@ -1,1 +1,28 @@
-{"include":["**/*.rs","**/*.yml","**/*.yaml"],"rules":[{"path":"**/*.rs","rule":"Review Rust startup for single global logger ownership, panic-hook reliability, platform cfg correctness and regressions. Early diagnostics must survive failed Tauri initialization without relying on the global logger."},{"path":"**/*.{yml,yaml}","rule":"Check CI artifact provenance, no unintended release mutations, and safe packaging."}]}
+{
+  "include": [
+    "**/*.rs",
+    "**/*.yml",
+    "**/*.yaml",
+    "**/*.nsi",
+    "**/*.md",
+    "**/*.svg"
+  ],
+  "rules": [
+    {
+      "path": "**/*.rs",
+      "rule": "Review Rust startup for single global logger ownership, panic-hook reliability, platform cfg correctness and regressions. Early diagnostics must survive failed Tauri initialization without relying on the global logger."
+    },
+    {
+      "path": "**/*.{yml,yaml}",
+      "rule": "Check CI artifact provenance, no unintended release mutations, and safe packaging."
+    },
+    {
+      "path": "**/*.nsi",
+      "rule": "Review NSIS template compatibility with locked Tauri CLI. Preserve legacy upgrade registry and install paths, executable identity, silent and interactive upgrade safety; change presentation branding only."
+    },
+    {
+      "path": "**/*.md",
+      "rule": "Review branding, privacy and distribution claims against implementation; preserve required upstream attribution and accurately distinguish static tests from runtime upgrade acceptance."
+    }
+  ]
+}
