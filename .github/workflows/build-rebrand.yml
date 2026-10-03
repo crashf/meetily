@@ -1,0 +1,24 @@
+name: Pund-IT Meeting Assistant - Windows Rebrand Test
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: pund-it-rebrand-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    permissions:
+      contents: write # inherited reusable workflow; release-id is never supplied
+    uses: ./.github/workflows/build.yml
+    with:
+      platform: windows-latest
+      target: x86_64-pc-windows-msvc
+      build-args: ""
+      sign-binaries: true
+      asset-prefix: pund-it-meeting-assistant-test
+      upload-artifacts: true
+      branded-delivery: true
+      ref: ${{ github.sha }}
+    secrets: inherit

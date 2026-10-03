@@ -1,127 +1,33 @@
-# Meetily Privacy Policy
+# Pund-IT Meeting Assistant — privacy and data handling
 
-*Last updated: [Current Date]*
+Updated: 2026-10-03. This document describes this fork's data paths, not a guarantee of compliance or complete offline operation.
 
-## Our Privacy-First Commitment
+## Recording and local storage
 
-Meetily is built on the principle that your meeting data should remain private and under your control. This privacy policy explains how we handle data in our open-source meeting assistant.
+Microphone/system audio is captured on your device. Whisper/Parakeet transcription runs locally. Recordings, transcripts, meeting metadata and summaries are persisted locally. Browser-trigger metadata can include the meeting name and platform. You are responsible for participant consent, lawful recording, retention and authorized access.
 
-## Data Processing Philosophy
+Local files and SQLite data are not promised to be application-encrypted. Use OS full-disk encryption, appropriate filesystem permissions and protected backups. Exported files and backups are separate copies; deleting a meeting does not necessarily remove those copies or data already sent to a provider.
 
-### Local-First Processing
-- **Meeting transcription**: Processed entirely on your device using local Whisper models
-- **Audio recordings**: Never transmitted to external servers
-- **Meeting content**: Remains on your infrastructure
-- **AI summaries**: Generated locally or through your chosen LLM provider
+## Optional summary-provider transfers
 
-### Your Data Ownership
-- You own all meeting data, transcripts, and recordings
-- Data is stored locally on your device
-- No vendor lock-in - export your data anytime
-- Complete control over data retention and deletion
+Summary generation sends meeting text and prompts to the provider you configure. Cloud providers such as Claude, Groq, OpenRouter and OpenAI-compatible services process that content under their own policies. A custom endpoint or Ollama on another host also transfers data over the network. Only a locally hosted provider with locally available models avoids that provider network transfer. Review destination, transport security, retention and access controls before use; do not assume a provider has zero retention.
 
-## Usage Analytics
+## Other network activity
 
-### What We Collect
-Usage analytics is optional and off by default. When you choose to enable it, Meetily collects minimal, anonymized usage data:
+Model/dependency downloads and configured update services require network access. Provider checks or configured licensing services may also connect externally; inspect the build configuration and deployment policy. This rebrand adds no Hub or ticket-upload integration.
 
-**Application Usage:**
-- Feature usage patterns (which tools you use most)
-- Session duration and frequency
-- Performance metrics (transcription success rates, error frequencies)
-- UI interaction patterns (button clicks, navigation flows)
+Analytics is optional and disabled until enabled in settings. When enabled, the existing PostHog integration sends usage events, generated user/session identifiers and technical/device information. Generated identifiers are pseudonymous, not a guarantee of anonymity. Event schemas are visible in `frontend/src/lib/analytics.ts` and `frontend/src-tauri/src/analytics/`. Meeting content is not intended analytics payload; logs and metadata can still be sensitive. No provider retention, residency or access-control guarantee is made here. Turn analytics off to stop subsequent analytics events; this does not erase previously received data.
 
-**Technical Metrics:**
-- Application version and platform information
-- Error logs and crash reports (anonymized)
-- Performance benchmarks (processing times, resource usage)
+## Browser pairing and diagnostics
 
-### What We DON'T Collect
-We never collect:
-- ❌ Meeting content, transcripts, or recordings
-- ❌ Personal information or identifiable data
-- ❌ File names, meeting titles, or metadata
-- ❌ Audio data or voice patterns
-- ❌ Participant names or contact information
-- ❌ LLM conversations or AI-generated content
+The extension sends recording-control requests and meeting metadata to the desktop service on loopback, authenticated with a bearer token. Protect the pairing token; do not paste it into support tickets. Keep existing port, protocol and token preferences through upgrades. Loopback authentication is not a cloud export API.
 
-### Why We Collect This Data
-When enabled, analytics helps us with:
-- **Product Quality**: Identifying and fixing bugs that impact user experience
-- **Performance Optimization**: Understanding resource usage and system bottlenecks
-- **Security**: Detecting potential security issues and vulnerabilities
-- **Feature Development**: Making data-driven decisions about new features
-- **Open Source Sustainability**: Ensuring the project meets user needs effectively
+Application logs and the Windows startup diagnostic log can contain error details and paths. Review/redact diagnostic files before sharing; share only with authorized support through an approved channel. API keys and tokens must not be included.
 
-### Analytics Implementation
-- **Provider**: PostHog (privacy-focused analytics platform)
-- **Default**: Off by default; analytics starts only after you enable it in settings
-- **Anonymization**: All data linked to generated user IDs only - no personal identification
-- **Data retention**: 12 months maximum, then automatically deleted
-- **Encryption**: All data encrypted in transit using industry-standard protocols
-- **Location**: Data processed in accordance with PostHog's privacy policy
-- **Access Control**: Strictly limited to core development team members
+## Control, support and changes
 
-## Third-Party Services
+Review settings before enabling an external provider or analytics. You can view/export/delete local meeting data using the application; manage copies and provider-side data separately. For privacy questions use your established Pund-IT support contact or the fork's private issue tracker, not the upstream promotional/contact channels. Policy changes are documented in this repository; no unimplemented in-app notification promise is made.
 
-### LLM Providers (Optional)
-If you choose to use external LLM providers:
-- **Anthropic Claude**: Subject to Anthropic's privacy policy
-- **Groq**: Subject to Groq's privacy policy
-- **Local Ollama**: Processed entirely on your device
+## Open-source attribution
 
-### Analytics Service (Optional)
-- **PostHog**: Used for usage analytics when enabled
-- **Data**: Only anonymized usage patterns, no meeting content
-- **Control**: Completely optional, off by default, and user-controlled
-
-## Your Privacy Rights
-
-### Data Control
-- **Access**: View all data stored locally on your device
-- **Export**: Export your data in standard formats
-- **Delete**: Remove all data from your device
-
-
-### Analytics Transparency
-- **Open source**: Full analytics implementation available for review in our source code
-- **Opt-in**: New and existing installs have analytics disabled until you turn it on
-- **Questions**: Contact us for any analytics-related concerns
-
-## Data Security
-
-### Local Security
-- Data encrypted at rest using your device's security features
-- No transmission of sensitive meeting data
-- Standard file system permissions protect your data
-
-### Open Source Transparency
-- Full source code available for security review
-- Community-audited privacy implementations
-- No hidden data collection or tracking
-
-## Changes to This Policy
-
-We will notify users of any material changes to this privacy policy through:
-- Updates to this document in our GitHub repository
-- Release notes for application updates
-- In-app notifications for significant privacy changes
-
-## Contact Us
-
-For privacy-related questions or concerns:
-- **GitHub Issues**: [Create an issue](https://github.com/Zackriya-Solutions/meeting-minutes/issues)
-- **Email**: [Contact form](https://www.zackriya.com/service-interest-form/)
-- **Community**: [Discord](https://discord.gg/crRymMQBFH)
-
-## Open Source Commitment
-
-As an open-source project under MIT license, you can:
-- Review our complete privacy implementation
-- Modify data handling to meet your requirements
-- Deploy entirely on your own infrastructure
-- Contribute to privacy improvements
-
----
-
-*This privacy policy applies to Meetily v0.0.5 and later versions. For enterprise deployments, additional privacy controls may be available.*
+This fork derives from [Meetily](https://github.com/Zackriya-Solutions/meetily). The [MIT license](LICENSE.md) and required third-party notices are retained. Source visibility enables review, but is not proof of a security audit or regulatory certification.

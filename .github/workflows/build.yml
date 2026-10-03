@@ -28,6 +28,10 @@ on:
         required: false
         type: boolean
         default: false
+      branded-delivery:
+        required: false
+        type: boolean
+        default: false
       sign-binaries:
         required: false
         type: boolean
@@ -56,6 +60,17 @@ jobs:
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+
+      - name: Guard artifact-only branded delivery
+        if: inputs.branded-delivery
+        shell: bash
+        env:
+          RELEASE_ID: ${{ inputs.release-id }}
+          BUILD_ARGS: ${{ inputs.build-args }}
+        run: |
+          test -z "$RELEASE_ID" || { echo "Branded delivery must not publish a release"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || { echo "Build must match dispatch SHA"; exit 1; }
+          test -z "$BUILD_ARGS" || { echo "Branded delivery uses the proven default native target path"; exit 1; }
 
       # Pund-IT fork: map code-signing secret presence to env flags — the `secrets`
       # context is unavailable in step-level `if:` conditions, so all later guards
@@ -746,8 +761,26 @@ jobs:
             target/${{ steps.build-profile.outputs.profile }}/bundle/rpm/*.rpm
           retention-days: 30
 
+      - name: Stage Pund-IT Windows installer delivery
+        if: inputs.upload-artifacts && inputs.branded-delivery && contains(inputs.platform, 'windows')
+        shell: bash
+        env:
+          DELIVERY_PROFILE: ${{ steps.build-profile.outputs.profile }}
+        run: |
+          export DELIVERY_SHA=$(git rev-parse HEAD)
+          node .github/stage-branded-installers.cjs "target/$DELIVERY_PROFILE/bundle" "$RUNNER_TEMP/pund-it-delivery"
+
+      - name: Upload Pund-IT Windows installer delivery
+        if: inputs.upload-artifacts && inputs.branded-delivery && contains(inputs.platform, 'windows')
+        uses: actions/upload-artifact@v4
+        with:
+          name: pund-it-meeting-assistant-windows-x64-${{ github.sha }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pund-it-delivery/*
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Upload artifacts (Windows)
-        if: inputs.upload-artifacts && contains(inputs.platform, 'windows')
+        if: inputs.upload-artifacts && !inputs.branded-delivery && contains(inputs.platform, 'windows')
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.asset-prefix }}-${{ inputs.target }}

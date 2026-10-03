@@ -343,3 +343,7 @@ For issues with workflows:
 2. Review this documentation
 3. Check `README_DEVTEST.md` for devtest-specific help
 4. Check `ACCELERATION_GUIDE.md` for GPU/performance info
+
+## Pund-IT controlled rebrand delivery
+
+For the artifact-only Windows workflow, exact-SHA verification and recovered original Hermes operator route, see [Distribution](../../docs/DISTRIBUTION.md). This path does not replace the normal release.

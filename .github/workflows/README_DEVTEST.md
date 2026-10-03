@@ -177,3 +177,5 @@ Key configuration:
 - `build-linux.yml` - Linux-specific builds with signing
 - `build-test.yml` - All platforms with signing (pre-release)
 - `release.yml` - Production release workflow
+
+For Pund-IT rebrand distribution, use the separate [artifact-only delivery procedure](../../docs/DISTRIBUTION.md), not a normal release overwrite. Signing flags are requests, not proof of a signed artifact.
