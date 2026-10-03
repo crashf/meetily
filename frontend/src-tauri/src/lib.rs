@@ -63,6 +63,57 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::RwLock;
 
+#[cfg(target_os = "windows")]
+pub(crate) mod startup_diagnostic {
+    use std::{
+        fs::{self, OpenOptions},
+        io::Write,
+        panic,
+        path::PathBuf,
+        sync::Mutex,
+    };
+
+    static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+    fn log_path() -> Option<PathBuf> {
+        std::env::var_os("LOCALAPPDATA")
+            .map(|root| PathBuf::from(root).join("meetily").join("startup-diagnostic.log"))
+    }
+
+    fn append(line: &str) {
+        let _guard = WRITE_LOCK.lock().ok();
+        let Some(path) = log_path() else { return };
+        if let Some(parent) = path.parent() {
+            if fs::create_dir_all(parent).is_err() { return; }
+        }
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            let _ = writeln!(file, "{timestamp} | {line}");
+            let _ = file.flush();
+        }
+    }
+
+    pub(crate) fn checkpoint(message: &str) {
+        append(&format!("CHECKPOINT: {message}"));
+    }
+
+    pub(crate) fn install() {
+        append("===== process start =====");
+        checkpoint("panic hook installed before env_logger and Tauri");
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            let message = info.payload().downcast_ref::<&str>().copied()
+                .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("<non-string panic payload>");
+            append(&format!("PANIC: {message}; location={:?}; thread={:?}", info.location(), std::thread::current().name()));
+            previous(info);
+        }));
+    }
+}
+
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
@@ -449,14 +500,14 @@ pub fn run() {
     log::set_max_level(log::LevelFilter::Info);
 
     #[cfg(target_os = "windows")]
-    crate::startup_diagnostic::checkpoint("entered app_lib::run");
+    startup_diagnostic::checkpoint("entered app_lib::run");
 
     #[cfg(target_os = "windows")]
-    crate::startup_diagnostic::checkpoint("before Tauri builder creation");
+    startup_diagnostic::checkpoint("before Tauri builder creation");
     let mut builder = tauri::Builder::default();
 
     #[cfg(target_os = "windows")]
-    crate::startup_diagnostic::checkpoint("Tauri builder created; registering plugins");
+    startup_diagnostic::checkpoint("Tauri builder created; registering plugins");
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
@@ -498,9 +549,9 @@ pub fn run() {
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
             #[cfg(target_os = "windows")]
-            crate::startup_diagnostic::checkpoint("entered Tauri setup callback");
+            startup_diagnostic::checkpoint("entered Tauri setup callback");
             #[cfg(target_os = "windows")]
-            crate::startup_diagnostic::checkpoint("resolving ONNX Runtime DLL");
+            startup_diagnostic::checkpoint("resolving ONNX Runtime DLL");
             #[cfg(target_os = "windows")]
             match _app.path().resolve(
                 "onnxruntime.dll",
