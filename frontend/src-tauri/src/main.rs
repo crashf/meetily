@@ -3,22 +3,14 @@
     windows_subsystem = "windows"
 )]
 
-use log;
-use env_logger;
-
 fn main() {
     // Install first so even early startup panics are recorded before Tauri.
     #[cfg(target_os = "windows")]
     app_lib::startup_diagnostic::install();
 
-    std::env::set_var("RUST_LOG", "info");
-    env_logger::init();
-
-    #[cfg(target_os = "windows")]
-    app_lib::startup_diagnostic::checkpoint("env_logger initialized");
-
-    // Async logger will be initialized lazily when first needed (after Tauri runtime starts)
-    log::info!("Starting application...");
+    // Tauri's log plugin owns the process logger (stdout + meetily.log).
+    // Do not initialize env_logger here: log allows only one global logger.
+    // Early Windows checkpoints/panics use the independent diagnostic file.
     #[cfg(target_os = "windows")]
     app_lib::startup_diagnostic::checkpoint("calling app_lib::run");
     app_lib::run();

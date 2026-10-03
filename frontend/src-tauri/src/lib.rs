@@ -102,7 +102,7 @@ pub mod startup_diagnostic {
 
     pub fn install() {
         append("===== process start =====");
-        checkpoint("panic hook installed before env_logger and Tauri");
+        checkpoint("panic hook installed before Tauri logger initialization");
         let previous = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
             let message = info.payload().downcast_ref::<&str>().copied()
