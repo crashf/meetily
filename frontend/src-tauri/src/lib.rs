@@ -64,7 +64,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::RwLock;
 
 #[cfg(target_os = "windows")]
-pub(crate) mod startup_diagnostic {
+pub mod startup_diagnostic {
     use std::{
         fs::{self, OpenOptions},
         io::Write,
@@ -96,11 +96,11 @@ pub(crate) mod startup_diagnostic {
         }
     }
 
-    pub(crate) fn checkpoint(message: &str) {
+    pub fn checkpoint(message: &str) {
         append(&format!("CHECKPOINT: {message}"));
     }
 
-    pub(crate) fn install() {
+    pub fn install() {
         append("===== process start =====");
         checkpoint("panic hook installed before env_logger and Tauri");
         let previous = panic::take_hook();
