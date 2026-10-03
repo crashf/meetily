@@ -16,7 +16,7 @@ Use the registered `Build Test` workflow (`build-test.yml`, workflow ID `3726583
 
 ```bash
 gh workflow run 372658384 --repo crashf/meetily --ref pundit/meeting-assistant-rebrand
-gh run list --repo crashf/meetily --workflow build-test.yml --branch pundit/meeting-assistant-rebrand --limit 5 --json databaseId,headSha,status,conclusion,url
+gh api 'repos/crashf/meetily/actions/workflows/372658384/runs?branch=pundit%2Fmeeting-assistant-rebrand&per_page=5' --jq '.workflow_runs[] | {id,head_sha,status,conclusion,html_url}'
 ```
 
 Use the existing authorized operator environment; internal access instructions are maintained privately, not in public source. Before dispatch, verify the remote branch SHA equals the reviewed full SHA and check for an existing matching run. Do not duplicate builds. Require the selected run's `headSha` to equal that separately approved SHA. No default-branch changes or new credentials are needed for this route.
