@@ -6,8 +6,8 @@ const path = require('node:path');
 const {execFileSync} = require('node:child_process');
 const root = path.resolve(__dirname, '../../..');
 const base = 'e86df852510ab879e8507577a2477a06917f7dfa';
-const read = p => fs.readFileSync(path.join(root,p),'utf8');
-const old = p => execFileSync('git',['show',`${base}:${p}`],{cwd:root,encoding:'utf8'});
+const read = p => fs.readFileSync(path.join(root,p),'utf8').replaceAll('\r\n','\n');
+const old = p => execFileSync('git',['show',`${base}:${p}`],{cwd:root,encoding:'utf8'}).replaceAll('\r\n','\n');
 const brand = 'Pund-IT Meeting Assistant';
 test('native display metadata changes without identity/security/updater changes',()=>{
  const p='frontend/src-tauri/tauri.conf.json'; const now=JSON.parse(read(p)), before=JSON.parse(old(p));

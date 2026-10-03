@@ -133,6 +133,7 @@ Parent must integrate this isolated correction, independently validate it and
 run full-range OCR/triage. Real legacy NSIS/MSI upgrade/final uninstall,
 unrelated link/Run preservation, update mode, pinned shortcuts, actual MSI
 identity, app data/preferences/token preservation and cross-bundle transitions
-remain open. Branded MSI-to-NSIS name detection is not expanded by this fix.
+remain open. Branded MSI-to-NSIS display-name detection is expanded statically by this fix;
+actual migration remains unverified pending Windows runtime acceptance.
 No push, CI dispatch, release or Hub feature work. Rollback by excluding or
 reverting this correction commit; never delete application data.
