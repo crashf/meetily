@@ -842,6 +842,27 @@ Section Uninstall
       !insertmacro UnpinShortcut "$DESKTOP\${PRODUCTNAME}.lnk"
       Delete "$DESKTOP\${PRODUCTNAME}.lnk"
     ${EndIf}
+    ; PUN-827 BEGIN legacy shortcut cleanup (target verified, non-update only)
+    !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${LEGACYPRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    Pop $0
+    ${If} $0 = 1
+      !insertmacro UnpinShortcut "$SMPROGRAMS\$AppStartMenuFolder\${LEGACYPRODUCTNAME}.lnk"
+      Delete "$SMPROGRAMS\$AppStartMenuFolder\${LEGACYPRODUCTNAME}.lnk"
+      RMDir "$SMPROGRAMS\$AppStartMenuFolder"
+    ${EndIf}
+    !insertmacro IsShortcutTarget "$SMPROGRAMS\${LEGACYPRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    Pop $0
+    ${If} $0 = 1
+      !insertmacro UnpinShortcut "$SMPROGRAMS\${LEGACYPRODUCTNAME}.lnk"
+      Delete "$SMPROGRAMS\${LEGACYPRODUCTNAME}.lnk"
+    ${EndIf}
+    !insertmacro IsShortcutTarget "$DESKTOP\${LEGACYPRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    Pop $0
+    ${If} $0 = 1
+      !insertmacro UnpinShortcut "$DESKTOP\${LEGACYPRODUCTNAME}.lnk"
+      Delete "$DESKTOP\${LEGACYPRODUCTNAME}.lnk"
+    ${EndIf}
+    ; PUN-827 END legacy shortcut cleanup
   ${EndIf}
 
   ; Remove registry information for add/remove programs
@@ -859,6 +880,13 @@ Section Uninstall
   ; We do this when not updating (to preserve the registry value on updates)
   ${If} $UpdateMode <> 1
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+    ; PUN-827 BEGIN legacy Run cleanup (exact binary only; ambiguous commands retained)
+    ReadRegStr $R7 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${LEGACYPRODUCTNAME}"
+    ${If} $R7 == "$INSTDIR\${MAINBINARYNAME}.exe"
+    ${OrIf} $R7 == "$\"$INSTDIR\${MAINBINARYNAME}.exe$\""
+      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${LEGACYPRODUCTNAME}"
+    ${EndIf}
+    ; PUN-827 END legacy Run cleanup
   ${EndIf}
 
   ; Delete app data if the checkbox is selected

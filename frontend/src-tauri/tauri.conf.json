@@ -107,6 +107,9 @@
             "hardenedRuntime": true
         },
         "windows": {
+            "wix": {
+                "upgradeCode": "293c4b6a-4aa1-5ef8-9cfd-823fc6139987"
+            },
             "nsis": {
                 "template": "config/installer-compat.nsi"
             },

@@ -1,7 +1,8 @@
 # PUN-827 native / extension branding delivery
 
 Base: e86df852510ab879e8507577a2477a06917f7dfa.
-Branch: pundit/rebrand-native. Canonical Multica issue PUN-827
+Original component branch: pundit/rebrand-native. Installer correction branch:
+pundit/rebrand-installer-fix, integration base ca94e265fef777e08a3c8f8879d8392e4b275510. Canonical Multica issue PUN-827
 (71e66744-97e8-4e4b-bd4c-e5550e05c90c), project
 91c43201-63dc-4d51-a557-88fe0d52e872. No push, release or Windows build.
 
@@ -39,8 +40,14 @@ from the legacy registry key. No application-data migration is introduced.
 
 The copied template must be reconciled when the locked CLI is upgraded;
 this source was not rendered or compiled by NSIS on this Linux host. Existing
-legacy shortcuts can remain alongside the newly branded shortcut when doing
-an in-place update; deleting/renaming old shortcuts is intentionally avoided.
+legacy shortcuts can remain alongside the newly branded shortcut during an
+in-place update. Creation/update preference behavior is unchanged. Non-update
+uninstall now checks all three existing locations (selected Start Menu folder,
+Start Menu root and desktop) for meetily.lnk and only unpins/deletes a link
+when upstream IsShortcutTarget confirms the unchanged installed meetily.exe
+target. Same-name links pointing elsewhere are preserved; directories are
+removed only with the existing non-recursive RMDir behavior. /UPDATE skips
+this cleanup. No shortcut migration or unconditional new shortcut is added.
 Actual Windows fresh install, same-version reinstall, upgrade, uninstall,
 MSI-to-NSIS detection and data/token preservation remain UNVERIFIED. MSI,
 macOS and Linux display/package effects also need artifact/runtime validation.
@@ -66,7 +73,10 @@ Do not interpret the static template checks as upgrade acceptance.
 
 ## Evidence and remaining gates
 
-node --test frontend/src-tauri/tests/branding-invariants.test.cjs: 5/5 pass.
+Original native component suite: 5/5 pass. Installer correction suite now
+contains 9 tests, including independently calculated UUIDv5, exact cleanup
+blocks and full normalized upstream template SHA256; see correction evidence
+below for the executed result.
 Tests compare base/current configuration structurally, extension manifest
 nonpresentation fields, exact extension presentation-only substitutions,
 Rust presentation-only substitutions and key unchanged storage/logger files;
@@ -81,3 +91,47 @@ No OCR review is claimed; completed full-range OCR with findings triage is
 required before the combined rebrand is shipped. Existing normal release
 remains untouched. Rollback this isolated source component by excluding or
 reverting its commit; do not delete application data.
+
+
+## PUN-827 installer correction evidence (2026-10-03)
+
+Exact source confirmed against Tauri tag tauri-cli-v2.11.1,
+crates/tauri-bundler/src/bundle/windows/msi/mod.rs:588-600: default WiX
+UpgradeCode is UUIDv5(DNS, productName + ".exe.app.x64"). Python uuid.uuid5
+and an independent Node SHA1/UUID version+variant implementation both yield
+293c4b6a-4aa1-5ef8-9cfd-823fc6139987 for meetily. bundle.windows.wix.upgradeCode
+now pins that legacy upgrade family. The installed exact CLI 2.11.1
+config.schema.json defines upgradeCode as a UUID string in WixConfig and
+WindowsConfig references WixConfig. Both MSI/NSIS targets remain enabled;
+no binary rename, storage identity or application-data behavior changed.
+Verify the previously distributed MSI's actual UpgradeCode before shipping;
+source-derived identity is not artifact acceptance.
+
+Conditional legacy HKCU Run cleanup is inside the existing non-update guard.
+Only an exact unquoted installed meetily.exe path or that exact path enclosed
+in quotes permits deleting the meetily value. Different binaries/locations,
+empty values, commands with arguments and ambiguous command lines are retained
+conservatively; no prefix/substring matching or command execution is used.
+The original branded PRODUCTNAME Run cleanup is unchanged. No current native
+autostart writer was found by independent validation; this is compatibility
+protection, not a claim that deployed installations contain the old value.
+
+After removing only the two delimited cleanup additions and the original
+legacy identity split, the entire template hashes to the independently
+retrieved exact CLI 2.11.1 upstream SHA256:
+ee84148e405adc4d736a46456dd8345a644751bd1f28a335dd7fd833a32d7c3e.
+Thus all other NSIS text/control flow, including shortcut creation, /NS,
+/UPDATE, silent/passive, install modes, data checkbox and registry detection,
+remains byte-identical to the locked upstream template after normalization.
+
+Executed correction checks: 9/9 branding/installer tests; combined Node
+branding + delivery + portability suite; JSON schema field/type check;
+independent Python UUID and exact-tag upstream template hash; git diff --check.
+No native rendering, makensis, MSI compilation or Windows runtime was run.
+Parent must integrate this isolated correction, independently validate it and
+run full-range OCR/triage. Real legacy NSIS/MSI upgrade/final uninstall,
+unrelated link/Run preservation, update mode, pinned shortcuts, actual MSI
+identity, app data/preferences/token preservation and cross-bundle transitions
+remain open. Branded MSI-to-NSIS name detection is not expanded by this fix.
+No push, CI dispatch, release or Hub feature work. Rollback by excluding or
+reverting this correction commit; never delete application data.

@@ -14,6 +14,7 @@ test('native display metadata changes without identity/security/updater changes'
  assert.equal(now.productName,brand); assert.equal(now.app.windows[0].title,brand);
  before.productName=brand; before.app.windows[0].title=brand;
  before.bundle.windows.nsis={template:'config/installer-compat.nsi'};
+ before.bundle.windows.wix={upgradeCode:'293c4b6a-4aa1-5ef8-9cfd-823fc6139987'};
  assert.deepEqual(now,before);
 });
 test('Rust changes are presentation-only; logger, paths, DB, models and settings remain byte-identical',()=>{
@@ -47,4 +48,57 @@ test('NSIS legacy registry and directory identity is explicit, display and execu
  assert.ok(s.includes('"DisplayName" "${PRODUCTNAME}"'));
  assert.ok(s.includes('!define MAINBINARYNAME "{{main_binary_name}}"'));
  assert.ok(s.includes('!define BUNDLEID "{{bundle_id}}"'));
+});
+
+// Independent fixed-source invariants: no network, schema package or generated installer needed.
+const crypto = require('node:crypto');
+const legacyUpgradeCode = '293c4b6a-4aa1-5ef8-9cfd-823fc6139987';
+const installer = () => read('frontend/src-tauri/config/installer-compat.nsi');
+const correctionBlock = (s, name) => {
+ const re = new RegExp(`    ; PUN-827 BEGIN ${name}[^\\n]*\\n([\\s\\S]*?)    ; PUN-827 END ${name}\\n`);
+ const matches = [...s.matchAll(new RegExp(re.source,'g'))];
+ assert.equal(matches.length,1, name+' unique');
+ return matches[0][1];
+};
+test('MSI UpgradeCode pins exact CLI 2.11.1 legacy UUIDv5 DNS identity',()=>{
+ // crates/tauri-bundler/src/bundle/windows/msi/mod.rs at tauri-cli-v2.11.1:
+ // Uuid::new_v5(&Uuid::NAMESPACE_DNS, format!("{}.exe.app.x64", product_name).as_bytes())
+ const dns = Buffer.from('6ba7b8109dad11d180b400c04fd430c8','hex');
+ const bytes = crypto.createHash('sha1').update(dns).update('meetily.exe.app.x64').digest().subarray(0,16);
+ bytes[6]=(bytes[6]&15)|0x50; bytes[8]=(bytes[8]&63)|0x80;
+ const h=bytes.toString('hex');
+ const generated=`${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+ assert.equal(generated,legacyUpgradeCode);
+ assert.deepEqual(JSON.parse(read('frontend/src-tauri/tauri.conf.json')).bundle.windows.wix,{upgradeCode:generated});
+});
+test('legacy shortcuts use exactly the upstream target guard/unpin/delete for all three locations',()=>{
+ const s=installer(); const block=correctionBlock(s,'legacy shortcut cleanup');
+ let expected='';
+ for(const location of ['$SMPROGRAMS\\$AppStartMenuFolder','$SMPROGRAMS','$DESKTOP']) {
+  const link=location+'\\${LEGACYPRODUCTNAME}.lnk';
+  expected+=`    !insertmacro IsShortcutTarget "${link}" "$INSTDIR\\\${MAINBINARYNAME}.exe"\n    Pop $0\n    \${If} $0 = 1\n      !insertmacro UnpinShortcut "${link}"\n      Delete "${link}"\n`;
+  if(location.includes('$AppStartMenuFolder')) expected+='      RMDir "$SMPROGRAMS\\$AppStartMenuFolder"\n';
+  expected+='    ${EndIf}\n';
+ }
+ assert.equal(block,expected);
+ // Require the addition inside the original non-update shortcut guard, not after it.
+ const shortcutSection=s.slice(s.indexOf('  ; Remove shortcuts if not updating'),s.indexOf('  ; Remove registry information for add/remove programs'));
+ assert.ok(shortcutSection.startsWith('  ; Remove shortcuts if not updating\n  ${If} $UpdateMode <> 1\n'));
+ assert.ok(shortcutSection.endsWith('    ; PUN-827 END legacy shortcut cleanup\n  ${EndIf}\n\n'));
+ assert.equal((s.match(/Delete "[^"\n]*\$\{LEGACYPRODUCTNAME\}\.lnk"/g)||[]).length,3);
+});
+test('legacy Run cleanup is non-update, only exact quoted/unquoted installed binary; no prefix matching',()=>{
+ const s=installer(); const block=correctionBlock(s,'legacy Run cleanup');
+ assert.ok(s.includes('  ${If} $UpdateMode <> 1\n    DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "${PRODUCTNAME}"\n    ; PUN-827 BEGIN legacy Run cleanup'));
+ assert.ok(s.includes('    ; PUN-827 END legacy Run cleanup\n  ${EndIf}'));
+ assert.equal(block, "    ReadRegStr $R7 HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\" \"${LEGACYPRODUCTNAME}\"\n    ${If} $R7 == \"$INSTDIR\\${MAINBINARYNAME}.exe\"\n    ${OrIf} $R7 == \"$\\\"$INSTDIR\\${MAINBINARYNAME}.exe$\\\"\"\n      DeleteRegValue HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\" \"${LEGACYPRODUCTNAME}\"\n    ${EndIf}\n");
+});
+test('entire normalized installer is byte-identical to exact CLI 2.11.1 upstream',()=>{
+ let s=installer();
+ for(const name of ['legacy shortcut cleanup','legacy Run cleanup']) {
+  correctionBlock(s,name);
+  s=s.replace(new RegExp(`    ; PUN-827 BEGIN ${name}[^\\n]*\\n[\\s\\S]*?    ; PUN-827 END ${name}\\n`),'');
+ }
+ s=s.replace('; PUN-827: keep upgrade registry/directory identity independent of display branding.\n!define LEGACYPRODUCTNAME "meetily"\n','').replaceAll('${LEGACYPRODUCTNAME}','${PRODUCTNAME}');
+ assert.equal(crypto.createHash('sha256').update(s).digest('hex'),'ee84148e405adc4d736a46456dd8345a644751bd1f28a335dd7fd833a32d7c3e');
 });
