@@ -230,7 +230,7 @@ export default function AnalyticsConsentSwitch() {
               onClick={handlePrivacyPolicyClick}
               className="text-blue-600 hover:text-blue-800 underline hover:no-underline"
             >
-              View Privacy Policy
+              View Upstream Privacy Policy
             </button>
           </div>
         </div>

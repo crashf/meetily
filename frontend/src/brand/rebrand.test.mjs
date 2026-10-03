@@ -1,0 +1,48 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, resolve, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const src = resolve(frontend, 'src');
+const read = p => readFileSync(resolve(frontend, p), 'utf8');
+const allowed = new Map([
+  ['contexts/OnboardingContext.tsx', ['/usr/local/var/meetily/meeting_minutes.db']],
+  ['services/indexedDBService.ts', ['MeetilyRecoveryDB']],
+  ['lib/analytics.ts', ['meetily_user_id']],
+  ['components/MeetingDetails/MeetingDetailsSplitView.tsx', ['meetily.meetingDetails.transcriptPaneRatio']],
+  ['components/AutoRecordSettings.tsx', ['com.meetily.ai']],
+  ['components/About.tsx', ['Based on Meetily by Zackriya Solutions (MIT)']],
+  ['components/AnalyticsConsentSwitch.tsx', ['https://github.com/Zackriya-Solutions/meeting-minutes/blob/main/PRIVACY_POLICY.md']],
+  ['components/DatabaseImport/HomebrewDatabaseDetector.tsx', ['/var/meetily/', 'Legacy Meetily Data Detected', 'previous Meetily installation']],
+  ['components/DatabaseImport/LegacyDatabaseImport.tsx', ['select the Meetily folder', 'previous Meetily installation', 'previous Meetily folder']],
+]);
+function walk(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(resolve(dir, e.name)) : [resolve(dir, e.name)]);
+}
+test('every legacy source reference is explicitly justified by compatibility or attribution', () => {
+  for (const file of walk(src).filter(p => /\.tsx?$/.test(p))) {
+    const name = relative(src, file);
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      if (/meetily|zackriya/i.test(line)) assert.ok((allowed.get(name) || []).some(value => line.includes(value)), `${name}: ${line}`);
+    }
+  }
+});
+test('metadata, onboarding and recovery messaging carry the canonical product name', () => {
+  for (const name of ['app/metadata.ts', 'app/metadata.tsx', 'components/onboarding/steps/WelcomeStep.tsx', 'hooks/useRecordingStart.ts', 'components/Info.tsx', 'components/Logo.tsx']) {
+    assert.ok(read(`src/${name}`).includes('Pund-IT Meeting Assistant'), name);
+  }
+});
+test('original asset master and both native platform icon containers exist', () => {
+  assert.ok(read('public/pundit-meeting-assistant.svg').includes('Pund-IT Meeting Assistant'));
+  for (const name of ['icon.ico', 'app_icon.ico']) assert.equal(readFileSync(resolve(frontend, 'src-tauri/icons', name)).subarray(0, 4).toString('hex'), '00000100');
+  for (const name of ['icon.icns', 'app_icon.icns']) assert.equal(readFileSync(resolve(frontend, 'src-tauri/icons', name)).subarray(0, 4).toString(), 'icns');
+});
+test('support is Pund-IT; upstream attribution remains explicit', () => {
+  const about = read('src/components/About.tsx');
+  assert.ok(about.includes('https://pund-it.ca'));
+  assert.ok(about.includes('Based on Meetily by Zackriya Solutions (MIT)'));
+  assert.ok(!about.includes('Coming soon:'));
+  assert.ok(!about.includes('never leave your machine'));
+});

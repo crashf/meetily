@@ -18,11 +18,11 @@ const Logo = React.forwardRef<HTMLButtonElement, LogoProps>(
               ref={ref}
               type="button"
               className="flex items-center justify-center mb-2 cursor-pointer bg-transparent border-none p-0 hover:opacity-80 transition-opacity"
-              aria-label="About Meetily"
+              aria-label="About Pund-IT Meeting Assistant"
             >
               <Image
                 src="/logo-collapsed.png"
-                alt="Meetily"
+                alt="Pund-IT Meeting Assistant"
                 width={40}
                 height={40}
                 className="object-contain"
@@ -35,16 +35,16 @@ const Logo = React.forwardRef<HTMLButtonElement, LogoProps>(
             <button
               ref={ref}
               type="button"
-              className="w-full text-lg text-center border rounded-full bg-blue-50 border-white font-semibold text-gray-700 mb-2 block items-center cursor-pointer hover:opacity-80 transition-opacity focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              aria-label="About Meetily"
+              className="w-full flex gap-2 items-center text-left rounded-xl bg-slate-900 text-white p-3 mb-2 cursor-pointer hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+              aria-label="About Pund-IT Meeting Assistant"
             >
-              <span>Meetily</span>
+              <Image src="/logo-collapsed.png" alt="" width={32} height={32} className="shrink-0" /><span className="text-sm leading-tight">Pund-IT<br /><span className="text-xs font-normal text-teal-200">Meeting Assistant</span></span>
             </button>
           </DialogTrigger>
         )}
         <DialogContent>
           <VisuallyHidden>
-            <DialogTitle>About Meetily</DialogTitle>
+            <DialogTitle>About Pund-IT Meeting Assistant</DialogTitle>
           </VisuallyHidden>
           <About />
         </DialogContent>

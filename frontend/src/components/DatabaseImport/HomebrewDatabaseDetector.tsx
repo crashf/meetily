@@ -97,7 +97,7 @@ export function HomebrewDatabaseDetector({ onImportSuccess, onDecline }: Homebre
           <div className="flex items-center gap-2 mb-1">
             <AlertCircle className="h-4 w-4 text-blue-600" />
             <h3 className="text-sm font-semibold text-blue-900">
-              Previous Meetily Installation Detected!
+              Legacy Meetily Data Detected
             </h3>
           </div>
           <p className="text-sm text-blue-800 mb-2">
