@@ -8,7 +8,9 @@ const out = resolve(dirname(fileURLToPath(import.meta.url)), '../../out');
 function htmlFiles(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const path = resolve(dir, entry.name);
-    return entry.isDirectory() ? htmlFiles(path) : entry.name.endsWith('.html') ? [path] : [];
+    if (entry.isDirectory()) return htmlFiles(path);
+    if (entry.name.endsWith('.html')) return [path];
+    return [];
   });
 }
 test('static export emits the canonical title on every application page', () => {

@@ -1,3 +1,4 @@
+import { SUPPORT_URL } from '@/brand/config';
 import React, { useState, useEffect } from "react";
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
@@ -23,7 +24,7 @@ export function About() {
 
     const handleContactClick = async () => {
         try {
-            await invoke('open_external_url', { url: 'https://pund-it.ca' });
+            await invoke('open_external_url', { url: SUPPORT_URL });
         } catch (error) {
             console.error('Failed to open link:', error);
         }

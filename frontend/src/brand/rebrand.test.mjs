@@ -25,7 +25,8 @@ test('every legacy source reference is explicitly justified by compatibility or 
   for (const file of walk(src).filter(p => /\.tsx?$/.test(p))) {
     const name = relative(src, file).replaceAll('\\', '/');
     for (const line of readFileSync(file, 'utf8').split('\n')) {
-      if (/meetily|zackriya/i.test(line)) assert.ok((allowed.get(name) || []).some(value => line.includes(value)), `${name}: ${line}`);
+      const remaining = (allowed.get(name) || []).reduce((text, value) => text.replaceAll(value, ''), line);
+      assert.doesNotMatch(remaining, /meetily|zackriya/i, `${name}: ${line}`);
     }
   }
 });
@@ -41,7 +42,8 @@ test('original asset master and both native platform icon containers exist', () 
 });
 test('support is Pund-IT; upstream attribution remains explicit', () => {
   const about = read('src/components/About.tsx');
-  assert.ok(about.includes('https://pund-it.ca'));
+  assert.ok(about.includes('url: SUPPORT_URL'));
+  assert.ok(read('src/brand/config.ts').includes("SUPPORT_URL = 'https://pund-it.ca'"));
   assert.ok(about.includes('Based on Meetily by Zackriya Solutions (MIT)'));
   assert.ok(!about.includes('Coming soon:'));
   assert.ok(!about.includes('never leave your machine'));

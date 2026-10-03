@@ -200,7 +200,15 @@ Function PageReinstall
     IntOp $0 $0 + 1
     ReadRegStr $R0 HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1" "DisplayName"
     ReadRegStr $R1 HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1" "Publisher"
-    StrCmp "$R0$R1" "${LEGACYPRODUCTNAME}${MANUFACTURER}" 0 wix_loop
+    ; PUN-827 BEGIN MSI display-name compatibility
+    ${If} $R1 != "${MANUFACTURER}"
+      Goto wix_loop
+    ${EndIf}
+    ${If} $R0 != "${LEGACYPRODUCTNAME}"
+    ${AndIf} $R0 != "${PRODUCTNAME}"
+      Goto wix_loop
+    ${EndIf}
+    ; PUN-827 END MSI display-name compatibility
     ReadRegStr $R0 HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1" "UninstallString"
     ${StrCase} $R1 $R0 "L"
     ${StrLoc} $R0 $R1 "msiexec" ">"

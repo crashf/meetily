@@ -99,6 +99,16 @@ test('entire normalized installer is byte-identical to exact CLI 2.11.1 upstream
   correctionBlock(s,name);
   s=s.replace(new RegExp(`    ; PUN-827 BEGIN ${name}[^\\n]*\\n[\\s\\S]*?    ; PUN-827 END ${name}\\n`),'');
  }
+ s=s.replace(/    ; PUN-827 BEGIN MSI display-name compatibility\n[\s\S]*?    ; PUN-827 END MSI display-name compatibility\n/, '    StrCmp "$R0$R1" "${LEGACYPRODUCTNAME}${MANUFACTURER}" 0 wix_loop\n');
  s=s.replace('; PUN-827: keep upgrade registry/directory identity independent of display branding.\n!define LEGACYPRODUCTNAME "meetily"\n','').replaceAll('${LEGACYPRODUCTNAME}','${PRODUCTNAME}');
  assert.equal(crypto.createHash('sha256').update(s).digest('hex'),'ee84148e405adc4d736a46456dd8345a644751bd1f28a335dd7fd833a32d7c3e');
+});
+
+test('MSI predecessor detection accepts both display names with exact publisher and existing msiexec guard',()=>{
+ const block=correctionBlock(installer(),'MSI display-name compatibility');
+ assert.equal(block, '    ${If} $R1 != "${MANUFACTURER}"\n      Goto wix_loop\n    ${EndIf}\n    ${If} $R0 != "${LEGACYPRODUCTNAME}"\n    ${AndIf} $R0 != "${PRODUCTNAME}"\n      Goto wix_loop\n    ${EndIf}\n');
+ const accepts=(name,publisher)=>publisher==='Zackriya' && ['meetily','Pund-IT Meeting Assistant'].includes(name);
+ assert.ok(accepts('meetily','Zackriya')); assert.ok(accepts('Pund-IT Meeting Assistant','Zackriya'));
+ assert.ok(!accepts('Other','Zackriya')); assert.ok(!accepts('meetily','Other'));
+ assert.ok(installer().includes('${StrLoc} $R0 $R1 "msiexec" ">"\n    StrCmp $R0 0 0 wix_loop_done'));
 });

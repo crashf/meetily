@@ -1,3 +1,4 @@
+import { SUPPORT_URL } from '@/brand/config';
 import React, { useEffect, useState } from 'react';
 import { Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -98,7 +99,7 @@ export function SetupOverviewStep() {
           </Button>
           <div className="text-center">
             <a
-              href="https://pund-it.ca"
+              href={SUPPORT_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-gray-600 hover:underline"

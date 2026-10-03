@@ -32,7 +32,8 @@ Upstream Tauri copyright/licensing applies (MIT or Apache-2.0); retain upstream
 project notices. The local template separates LEGACYPRODUCTNAME=meetily from
 PRODUCTNAME. Legacy uninstall/manufacturer registry keys, placeholder/default
 install directory and multiuser directory remain meetily. WiX predecessor
-name+publisher detection remains legacy. DisplayName, installer pages, version
+detection accepts both legacy and branded display names, requires the unchanged
+exact publisher, and retains the upstream msiexec check. DisplayName, installer pages, version
 resources and newly created shortcuts show Pund-IT Meeting Assistant.
 MAINBINARYNAME, BUNDLEID, manufacturer, install mode and existing app-data
 removal behavior are untouched. Existing install path continues to be read
