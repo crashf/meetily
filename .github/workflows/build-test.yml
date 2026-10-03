@@ -25,6 +25,8 @@ jobs:
 
     uses: ./.github/workflows/build.yml
     with:
+      ref: ${{ github.sha }}
+      branded-delivery: ${{ matrix.platform == 'windows-latest' && github.ref_name == 'pundit/meeting-assistant-rebrand' }}
       platform: ${{ matrix.platform }}
       target: ${{ matrix.target }}
       build-args: ${{ matrix.args }}

@@ -60,3 +60,4 @@ endpoint. Leaving the meeting stops the recording.
 - Extension keeps the token in chrome.storage.local (per-profile).
 - Debug log contains meeting titles/URLs — it stays on-device; only paste it
   into bug reports you trust.
+Before sharing diagnostics, redact pairing tokens, Authorization headers, personal paths, meeting titles/URLs and other sensitive metadata. Share only through an authorized support channel.
