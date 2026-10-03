@@ -10,22 +10,22 @@ export function WelcomeStep() {
   const features = [
     {
       icon: Lock,
-      title: 'Your data never leaves your device',
+      title: 'Recording and transcription run on your device',
     },
     {
       icon: Sparkles,
-      title: 'Intelligent summaries & insights',
+      title: 'Local summaries, or optional external providers',
     },
     {
       icon: Cpu,
-      title: 'Works offline, no cloud required',
+      title: 'Local models work offline after download',
     },
   ];
 
   return (
     <OnboardingContainer
       title="Welcome to Pund-IT Meeting Assistant"
-      description="Record. Transcribe. Summarize. All on your device."
+      description="Record and transcribe locally. Summarize with local models or an optional external provider."
       step={1}
       hideProgress={true}
     >
@@ -49,6 +49,12 @@ export function WelcomeStep() {
             );
           })}
         </div>
+
+        <p className="max-w-md text-xs text-center text-gray-500">
+          External summary providers receive transcript content when you use them.
+          Model downloads and updates require network access. Optional usage analytics
+          is off by default and can be enabled in Settings.
+        </p>
 
         {/* CTA Section */}
         <div className="w-full max-w-xs space-y-3">

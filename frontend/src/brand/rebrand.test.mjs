@@ -46,3 +46,21 @@ test('support is Pund-IT; upstream attribution remains explicit', () => {
   assert.ok(!about.includes('Coming soon:'));
   assert.ok(!about.includes('never leave your machine'));
 });
+test('metadata is exported by the server layout with a stable client boundary', () => {
+  const layout = read('src/app/layout.tsx');
+  const client = read('src/app/ClientLayout.tsx');
+  assert.ok(!layout.includes("'use client'"));
+  assert.match(layout, /export \{ metadata \} from '\.\/metadata'/);
+  assert.match(layout, /<ClientLayout>\{children\}<\/ClientLayout>/);
+  assert.ok(client.startsWith("'use client'"));
+  assert.ok(!client.includes('<html'));
+  assert.ok(!client.includes('<body'));
+});
+test('privacy copy qualifies external summaries and network downloads', () => {
+  for (const file of walk(src).filter(p => /\.tsx?$/.test(p))) {
+    assert.doesNotMatch(readFileSync(file, 'utf8'), /(?:your data|recordings?|transcripts?|meetings?)[^\n]*never leave(?:s)?|all on your device|remain completely private and local|works offline, no cloud required/i, relative(src, file));
+  }
+  const welcome = read('src/components/onboarding/steps/WelcomeStep.tsx');
+  for (const text of ['Recording and transcription run on your device', 'Local models work offline after download', 'External summary providers receive transcript content', 'Model downloads and updates require network access', 'is off by default']) assert.ok(welcome.includes(text), text);
+  assert.ok(read('src/components/AnalyticsConsentSwitch.tsx').includes('transcript content is sent to that provider'));
+});

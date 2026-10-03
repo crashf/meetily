@@ -224,7 +224,7 @@ export default function AnalyticsConsentSwitch() {
           <Info className="w-4 h-4 text-blue-600 mt-0.5 flex-shrink-0" />
           <div className="text-xs text-blue-700">
             <p className="mb-1">
-              Your meetings, transcripts, and recordings remain completely private and local.
+              Recording and transcription run locally. If you use an external summary provider, transcript content is sent to that provider. Model downloads and updates use the network.
             </p>
             <button
               onClick={handlePrivacyPolicyClick}
