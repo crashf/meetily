@@ -137,7 +137,7 @@ pub async fn auto_record_test_notification<R: Runtime>(
 ) -> Result<serde_json::Value, String> {
     crate::auto_record::notify::notify(
         &app,
-        "Meetily notification test",
+        "Pund-IT Meeting Assistant notification test",
         "If you can see this, auto-record notifications work.",
     );
     debug_log(&app, "ui", "info", "Test notification requested from settings".to_string());

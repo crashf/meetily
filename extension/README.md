@@ -1,13 +1,13 @@
-# Meetily Auto-Record — Chrome extension (v1.1)
+# Pund-IT Meeting Assistant Auto-Record — Chrome extension (v1.1)
 
-Companion MV3 extension for the Pund-IT Meetily fork. Detects when you join a
+Companion MV3 extension for the Pund-IT Meeting Assistant desktop app. Detects when you join a
 meeting in the browser (Google Meet, Teams web, Zoom web) and tells the local
-Meetily app to start recording automatically via a loopback-only HTTP trigger
+Pund-IT Meeting Assistant app to start recording automatically via a loopback-only HTTP trigger
 endpoint. Leaving the meeting stops the recording.
 
 ## Install (dev / unpacked)
 
-1. Build/install the forked Meetily app first — Settings → Preferences →
+1. Build/install the forked Pund-IT Meeting Assistant app first — Settings → Preferences →
    Auto-record shows the trigger endpoint `http://127.0.0.1:7788/trigger` and the
    access token (click the copy icon).
 2. Chrome → `chrome://extensions` → enable **Developer mode** → **Load unpacked**
@@ -16,17 +16,17 @@ endpoint. Leaving the meeting stops the recording.
    on its card, and reload any already-open meeting tabs** — content scripts in
    existing tabs keep running the OLD version until the tab reloads.
 3. Open the extension's **Options** (Details → Extension options), paste the
-   token, confirm the port, click **Test connection** → expect ✓ Meetily reachable.
+   token, confirm the port, click **Test connection** → expect ✓ Pund-IT Meeting Assistant reachable.
 4. (Optional) In Options, tick **Debug mode** — adds verbose logging and a live
    log viewer here (worker state machine + per-tab detection logs).
 5. Join any Meet/Teams/Zoom meeting in Chrome. You get a **"Meeting detected"**
-   notification, then **"Recording started"**. Meetily starts recording within
+   notification, then **"Recording started"**. Pund-IT Meeting Assistant starts recording within
    ~4 s of the meeting UI being live; leaving stops within ~10 s.
 
 ## Notifications & debugging
 
 - The extension fires a notification when it detects a meeting, when recording
-  starts, when it stops (with reason), and on errors (Meetily unreachable,
+  starts, when it stops (with reason), and on errors (Pund-IT Meeting Assistant unreachable,
   token rejected, server busy). Toggle in Options.
 - **Debug mode** (Options toggle) enables a live log viewer in the options page:
   the worker's state machine + transport log, plus each open meeting tab's own
@@ -34,7 +34,7 @@ endpoint. Leaving the meeting stops the recording.
   **Copy debug log** and paste it into a bug report.
 - On a meeting page you can also open DevTools and use `__meetilyLog`,
   `__meetilyTick()` (run one detection pass now) and `__meetilySelectorHits()`.
-- In the Meetily app: Settings → Preferences → Auto-record → **Debug &
+- In the Pund-IT Meeting Assistant app: Settings → Preferences → Auto-record → **Debug &
   diagnostics** → Show — live ring-buffer of the app side (trigger server
   requests, 401s, gate probe status, deadman), test-notification button, and an
   opt-in file debug log (`AppData\Roaming\com.meetily.ai\auto_record_debug.log`,
@@ -47,7 +47,7 @@ endpoint. Leaving the meeting stops the recording.
   a real meeting URL pattern — this distinguishes an actual call from the lobby.
 - Join must be observed for ~4 s (2 ticks) so pre-join screens don't trigger.
 - Leave requires ~8 s absence to ride out UI popups, then POSTs stop.
-- Heartbeats every ~2 s while in-meeting (plus a 15 s alarm): Meetily's deadman
+- Heartbeats every ~2 s while in-meeting (plus a 15 s alarm): Pund-IT Meeting Assistant's deadman
   stops any orphaned recording 5 min after the browser dies mid-meeting.
 - Worker meeting state survives MV3 restarts (storage.session); after a Chrome
   restart mid-meeting the next HEARTBEAT resumes the session.

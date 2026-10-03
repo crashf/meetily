@@ -304,7 +304,7 @@ async fn handle_connection<R: Runtime>(app: AppHandle<R>, mut stream: TcpStream)
             "server",
             "warn",
             format!(
-                "unauthorized request to {} (header {}) — token mismatch or missing; extension must paste the token from Meetily → Settings → Preferences → Auto-record",
+                "unauthorized request to {} (header {}) — token mismatch or missing; extension must paste the token from Pund-IT Meeting Assistant → Settings → Preferences → Auto-record",
                 parsed.path,
                 if parsed.authorization.is_some() { "present but wrong" } else { "absent" }
             ),
@@ -387,8 +387,8 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) -> ServerExit {
                     &app,
                     "bind-fail",
                     10 * 60_000,
-                    "Meetily trigger server down",
-                    &format!("Meetily could not listen on {} — the browser extension cannot trigger recording. ({})", addr, last_err),
+                    "Pund-IT Meeting Assistant trigger server down",
+                    &format!("Pund-IT Meeting Assistant could not listen on {} — the browser extension cannot trigger recording. ({})", addr, last_err),
                 );
                 emit_event(
                     &app,

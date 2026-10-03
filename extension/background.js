@@ -1,5 +1,5 @@
-// Meetily Auto-Record — MV3 service worker.
-// Owns meeting state across tabs, talks to the local Meetily trigger server, alarms keep-alive.
+// Pund-IT Meeting Assistant Auto-Record — MV3 service worker.
+// Owns meeting state across tabs, talks to the local Pund-IT Meeting Assistant trigger server, alarms keep-alive.
 // v1.3 (PUN-801): SENSOR architecture. Content scripts no longer run detection state
 // machines — every frame (top AND subframes) beams raw signals every 2s; the worker
 // merges them per tab and decides join/leave. Fixes the split-frame case where Meet's
@@ -311,7 +311,7 @@ async function startMeeting(info) {
   if (!(await tokenReady())) {
     setBadge('!');
     dbg('startMeeting: no token configured');
-    notify('Meetily Auto-Record not paired', 'Open the extension options and paste the token from Meetily → Settings → Preferences → Auto-record.');
+    notify('Pund-IT Meeting Assistant Auto-Record not paired', 'Open the extension options and paste the token from Pund-IT Meeting Assistant → Settings → Preferences → Auto-record.');
     return { ok: false, error: 'no-token' };
   }
   const res = await callServer('/trigger', {
@@ -326,16 +326,16 @@ async function startMeeting(info) {
     notify('Recording started', `${info.meetingName} — ${info.platform}`);
   } else if (res.status === 0) {
     setBadge('off');
-    dbg('server unreachable (fetch failed) — Meetily app probably not running');
-    notifyThrottled('server-down', 5 * 60_000, 'Meetily not reachable', `Could not reach 127.0.0.1:${await getConfig().then(({ port }) => port)}/trigger — launch Meetily. Recording NOT started (${info.meetingName}).`);
+    dbg('server unreachable (fetch failed) — Pund-IT Meeting Assistant app probably not running');
+    notifyThrottled('server-down', 5 * 60_000, 'Pund-IT Meeting Assistant not reachable', `Could not reach 127.0.0.1:${await getConfig().then(({ port }) => port)}/trigger — launch Pund-IT Meeting Assistant. Recording NOT started (${info.meetingName}).`);
   } else if (res.status === 401 || res.json?.error?.includes('unauthorized')) {
     setBadge('ERR', '#c5221f');
     dbg('server rejected token (401) — extension token does not match the app');
-    notifyThrottled('token-401', 5 * 60_000, 'Meetily rejected the token', 'The paired token is wrong or was regenerated. Copy it again from Meetily → Settings → Preferences → Auto-record → paste into extension options.');
+    notifyThrottled('token-401', 5 * 60_000, 'Pund-IT Meeting Assistant rejected the token', 'The paired token is wrong or was regenerated. Copy it again from Pund-IT Meeting Assistant → Settings → Preferences → Auto-record → paste into extension options.');
   } else if (res.json?.error?.includes('failed to bind')) {
     setBadge('off');
     dbg('server reports bind failure');
-    notifyThrottled('bind-fail', 5 * 60_000, 'Meetily trigger server down', 'Meetily is running but its trigger port is busy. Restart the app to retry.');
+    notifyThrottled('bind-fail', 5 * 60_000, 'Pund-IT Meeting Assistant trigger server down', 'Pund-IT Meeting Assistant is running but its trigger port is busy. Restart the app to retry.');
   } else if (res.json?.error) {
     setBadge('ERR', '#c5221f');
     dbg(`server start failed: ${res.json.error}`);
@@ -355,7 +355,7 @@ async function stopMeeting(reason = '') {
   } else {
     setBadge('ERR');
     dbg(`stop failed: status=${res.status}`);
-    notifyThrottled('stop-fail', 60_000, 'Auto-record stop failed', 'Could not stop the recording — check Meetily.');
+    notifyThrottled('stop-fail', 60_000, 'Auto-record stop failed', 'Could not stop the recording — check Pund-IT Meeting Assistant.');
   }
   return res;
 }
@@ -511,7 +511,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     return;
   }
   if (msg.kind === 'MSG_NOTIFY') {
-    notify(msg.title || 'Meetily Auto-Record', msg.body || '');
+    notify(msg.title || 'Pund-IT Meeting Assistant Auto-Record', msg.body || '');
     return;
   }
 });

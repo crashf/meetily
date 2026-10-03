@@ -39,7 +39,7 @@ $('notify').addEventListener('change', async () => {
         {
           type: 'basic',
           iconUrl: chrome.runtime.getURL('icons/48.png'),
-          title: 'Meetily Auto-Record',
+          title: 'Pund-IT Meeting Assistant Auto-Record',
           message: 'Notifications enabled ✓',
           priority: 2,
         },
@@ -81,14 +81,14 @@ $('test').addEventListener('click', async () => {
     });
     const json = await res.json().catch(() => ({}));
     if (res.ok) {
-      statusEl.innerHTML = `<span class="ok">✓ Meetily reachable${json.recording ? ' — recording active' : ''}</span>`;
+      statusEl.innerHTML = `<span class="ok">✓ Pund-IT Meeting Assistant reachable${json.recording ? ' — recording active' : ''}</span>`;
     } else if (res.status === 401) {
-      statusEl.innerHTML = '<span class="bad">✗ Server up, but token rejected — paste the token from Meetily settings</span>';
+      statusEl.innerHTML = '<span class="bad">✗ Server up, but token rejected — paste the token from Pund-IT Meeting Assistant settings</span>';
     } else {
       statusEl.innerHTML = `<span class="bad">✗ Server responded ${res.status}</span>`;
     }
   } catch (e) {
-    statusEl.innerHTML = '<span class="bad">✗ Cannot reach Meetily — is the app running?</span>';
+    statusEl.innerHTML = '<span class="bad">✗ Cannot reach Pund-IT Meeting Assistant — is the app running?</span>';
   }
 });
 

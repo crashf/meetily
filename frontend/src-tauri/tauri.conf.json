@@ -1,6 +1,6 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-    "productName": "meetily",
+    "productName": "Pund-IT Meeting Assistant",
     "version": "0.4.1",
     "identifier": "com.meetily.ai",
     "build": {
@@ -12,7 +12,7 @@
     "app": {
         "windows": [
             {
-                "title": "meetily",
+                "title": "Pund-IT Meeting Assistant",
                 "width": 1100,
                 "height": 700,
                 "resizable": true,
@@ -107,6 +107,9 @@
             "hardenedRuntime": true
         },
         "windows": {
+            "nsis": {
+                "template": "config/installer-compat.nsi"
+            },
             "signCommand": "powershell -ExecutionPolicy Bypass -File scripts/sign-windows.ps1 -FilePath %1"
         }
     },

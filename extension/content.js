@@ -1,6 +1,6 @@
-// Meetily Auto-Record — content script.
+// Pund-IT Meeting Assistant Auto-Record — content script.
 // Detects "in a live meeting" on Meet/Teams/Zoom web and reports JOIN/LEAVE/HEARTBEAT
-// to the service worker, which talks to the local Meetily trigger server.
+// to the service worker, which talks to the local Pund-IT Meeting Assistant trigger server.
 // v1.3 (PUN-801): SENSOR architecture — every frame reports raw signals every 2s;
 // the worker merges per-tab and owns join/leave state. Fixes the split-frame case
 // (video/controls in a same-origin subframe whose URL fails inMeetingPath — neither
@@ -15,7 +15,7 @@
     dbgLog.push(line);
     if (dbgLog.length > 400) dbgLog.shift();
     window.__meetilyLog = dbgLog; // DevTools tap kept for bug reports
-    if (DEBUG) console.debug('[Meetily]', line);
+    if (DEBUG) console.debug('[Pund-IT Meeting Assistant]', line);
   }
   chrome.storage.local.get({ debugMode: false }, (v) => { DEBUG = !!v.debugMode; });
   chrome.storage.onChanged.addListener((changes) => {
@@ -361,5 +361,5 @@
     try { chrome.runtime.sendMessage({ kind: 'DEBUG_TICK', label: 'frame-unloading', url: location.href }); } catch (_) {}
   });
 
-  console.log('[Meetily Auto-Record] content script v1.3 active on', location.hostname, window.top === window ? '(top frame)' : '(subframe)');
+  console.log('[Pund-IT Meeting Assistant Auto-Record] content script v1.3 active on', location.hostname, window.top === window ? '(top frame)' : '(subframe)');
 })();
