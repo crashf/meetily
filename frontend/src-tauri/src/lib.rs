@@ -448,7 +448,15 @@ pub fn get_language_preference_internal() -> Option<String> {
 pub fn run() {
     log::set_max_level(log::LevelFilter::Info);
 
+    #[cfg(target_os = "windows")]
+    crate::startup_diagnostic::checkpoint("entered app_lib::run");
+
+    #[cfg(target_os = "windows")]
+    crate::startup_diagnostic::checkpoint("before Tauri builder creation");
     let mut builder = tauri::Builder::default();
+
+    #[cfg(target_os = "windows")]
+    crate::startup_diagnostic::checkpoint("Tauri builder created; registering plugins");
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
@@ -489,6 +497,10 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            #[cfg(target_os = "windows")]
+            crate::startup_diagnostic::checkpoint("entered Tauri setup callback");
+            #[cfg(target_os = "windows")]
+            crate::startup_diagnostic::checkpoint("resolving ONNX Runtime DLL");
             #[cfg(target_os = "windows")]
             match _app.path().resolve(
                 "onnxruntime.dll",
