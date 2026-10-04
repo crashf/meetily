@@ -807,6 +807,7 @@ if(chrome.webNavigation?.onCommitted)chrome.webNavigation.onCommitted.addListene
  sensorInvocations.delete(`${tabId}:${frameId}`);
  const t=tabSensors.get(tabId);if(!t)return;
  if(frameId===0)t.frames.clear();else t.frames.delete(frameId);
+ if(![...t.frames.values()].some(s=>s.joined||(s.media&&!s.lobby))){t.frameGoneAt=Date.now();t.offSince=t.frameGoneAt;}
  t.meetingSince=0;t.lastJoinEvidence=0;t.joinLogged=false;
 });
 
@@ -838,7 +839,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   for(const [id,t] of [...tabSensors])if(ownsAutomatic(t) && t.offSince && now-t.offSince>=LEAVE_DEBOUNCE_MS)await relinquish(id,t,'Observed dark leave confirmed');
   for (const [id,t] of tabSensors) if(t.frameGoneAt && now-t.frameGoneAt>=LEAVE_DEBOUNCE_MS) await relinquish(id,t,'Meeting frame disappearance confirmed');
   if(pendingStop)return;
-  const retainedOwner = () => serverAcknowledged && [...tabSensors.values()].some(t=>ownsAutomatic(t) && !t.offSince && Date.now()-(t.lastAffirmative||0)<=GONE_SILENCE_MS);
+  const retainedOwner = () => serverAcknowledged && [...tabSensors.values()].some(t=>t.inMeeting && !t.restored && !t.offSince && Date.now()-(t.lastAffirmative||0)<=GONE_SILENCE_MS);
   const activeTab = [...tabSensors.values()].find(t => freshMeeting(t, now));
   if (!activeTab && !forcedActive && !retainedOwner()) { setBadge(''); if (!meetingAny()) stopHeartbeat(); return; }
   if (!(await validateOwnerPairing())) return;
