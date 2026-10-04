@@ -238,7 +238,7 @@ async function persistTabs() {
     {
       url: t.url, meetingUrl: t.meetingUrl, platform: t.platform, meetingName: t.meetingName,
       meetingSince: t.meetingSince, inMeeting: t.inMeeting, offSince: t.offSince,
-      lastBeacon: t.lastBeacon, lastAffirmative: t.lastAffirmative, suppressed: t.suppressed, restored: t.restored, frames: undefined,
+      frameGoneAt:t.frameGoneAt, lastBeacon: t.lastBeacon, lastAffirmative: t.lastAffirmative, suppressed: t.suppressed, restored: t.restored, frames: undefined,
     },
   ]);
   await chrome.storage.session.set({ tabsState: flat });
@@ -269,7 +269,7 @@ async function restoreTabs() {
     if (!open.has(Number(id))) continue;
     const url = open.get(Number(id)).url || '';
     tabSensors.set(Number(id), { ...v, url, meetingUrl: parseMeetingUrl(url), frames: new Map(), inMeeting: false,
-      meetingSince: 0, offSince: 0, lastAffirmative: v.lastAffirmative || v.lastBeacon || 0,
+      meetingSince: 0, offSince: v.offSince || 0, frameGoneAt:v.frameGoneAt || 0, lastAffirmative: v.lastAffirmative || v.lastBeacon || 0,
       suppressed: !!v.suppressed || stopSuppressed, restored: eligibleUrl(url, v.platform) && !!(v.inMeeting || v.restored) });
   }
   await validateOwnerPairing();
@@ -809,6 +809,7 @@ if(chrome.webNavigation?.onCommitted)chrome.webNavigation.onCommitted.addListene
  if(frameId===0)t.frames.clear();else t.frames.delete(frameId);
  if(![...t.frames.values()].some(s=>s.joined||(s.media&&!s.lobby))){t.frameGoneAt=Date.now();t.offSince=t.frameGoneAt;}
  t.meetingSince=0;t.lastJoinEvidence=0;t.joinLogged=false;
+ void persistTabs().catch(e=>dbg(`commit persistence failed: ${e}`));
 });
 
 // ---- heartbeat alarm (keeps worker alive + flows through) --------------------

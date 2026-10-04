@@ -27,7 +27,8 @@ export function RecordingRecoveryPanel() {
     };
     const refresh=()=>{const sequence=++refreshSequence.current;invoke<number|null>('recording_recovery_status').then(g=>{if(live&&sequence===refreshSequence.current){if(g!==null){knownGeneration.current=g;setGeneration(g)}else if(!pendingReconciliation.current)setGeneration(null);reconcile();}}).catch(()=>{})};
     refreshRef.current=refresh;
-    const starts=listen('recording-started',()=>{uiEpoch.current++});
+    const starts=listen('recording-starting',()=>{uiEpoch.current++;pendingReconciliation.current=null});
+    const started=listen('recording-started',()=>{uiEpoch.current++;pendingReconciliation.current=null});
     const noSave=()=>{pendingReconciliation.current={generation:knownGeneration.current??0,epoch:uiEpoch.current};reconcile();};
     window.addEventListener('recording-no-save-reconcile',noSave);
     const subscription=listen<{native_generation:number}>('recording-recovery-complete',async(event)=>{
@@ -37,7 +38,7 @@ export function RecordingRecoveryPanel() {
       refresh();
     });
     refresh();const timer=setInterval(refresh,2000);window.addEventListener('recording-recovery-refresh',refresh);
-    return()=>{live=false;window.removeEventListener('recording-no-save-reconcile',noSave);subscription.then(fn=>fn()).catch(()=>{});starts.then(fn=>fn()).catch(()=>{});clearInterval(timer);window.removeEventListener('recording-recovery-refresh',refresh)};
+    return()=>{live=false;window.removeEventListener('recording-no-save-reconcile',noSave);subscription.then(fn=>fn()).catch(()=>{});starts.then(fn=>fn()).catch(()=>{});started.then(fn=>fn()).catch(()=>{});clearInterval(timer);window.removeEventListener('recording-recovery-refresh',refresh)};
   },[]);
   if(generation===null)return null;
   return <div role="alert" className="fixed bottom-4 right-4 z-[100] max-w-md p-4 border rounded bg-amber-50 shadow-lg">
