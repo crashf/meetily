@@ -61,3 +61,16 @@ endpoint. Leaving the meeting stops the recording.
 - Debug log contains meeting titles/URLs — it stays on-device; only paste it
   into bug reports you trust.
 Before sharing diagnostics, redact pairing tokens, Authorization headers, personal paths, meeting titles/URLs and other sensitive metadata. Share only through an authorized support channel.
+
+## 1.4.0 detector lifecycle safety
+
+An open meeting URL, idle beacons and the legacy URL-only toggle no longer authorize automatic recording. Fresh joined controls or non-lobby media are required (Teams requires its Leave control). All providers debounce dark signals for eight seconds. Worker restoration reconciles live tabs and server state before ownership; manual force ownership and pending stop intent survive worker restarts. Failed starts never display REC. Stops serialize with starts and failed stops retain retry intent. Manual/app stops suppress automatic restart until a dark transition followed by a new confirmed join; explicit Force start remains available after stop completion. This deliberately declines ambiguous engine-disappearance resurrection rather than overriding user intent.
+
+Regression suite: `node --test extension/tests/lifecycle.test.cjs` (mocked Chrome MV3, fetch and deterministic clock). Browser/Windows runtime acceptance remains separate.
+
+### Pairing changes during recording
+Cleanup is bound to a non-secret SHA-256 pairing identity. The worker retains the
+old transport credential only in memory. After a worker restart with changed
+port/token, cleanup fails closed with pending intent rather than acknowledging a
+stop from another desktop. Restore the original pairing or stop the original
+desktop explicitly before changing pairing; its deadman is not a saved-stop claim.

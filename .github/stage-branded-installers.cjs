@@ -6,12 +6,14 @@ function stage(bundle, output, { sha, runId, attempt }) {
   if (!/^[a-f0-9]{40}$/.test(sha) || !/^\d+$/.test(runId) || !/^\d+$/.test(attempt)) {
     throw new Error('Expected full commit SHA, numeric run ID and attempt');
   }
+  if (!fs.lstatSync(bundle).isDirectory()) throw new Error('Bundle must be a real directory');
   // Refuse reuse/overwrite, including an existing symlink.
   fs.mkdirSync(output, { recursive: false });
   const files = [];
   for (const [folder, ext] of [['nsis', '.exe'], ['msi', '.msi']]) {
     const dir = path.join(bundle, folder);
     if (!fs.existsSync(dir)) continue;
+    if (!fs.lstatSync(dir).isDirectory()) throw new Error('Installer directory must be a real directory');
     for (const name of fs.readdirSync(dir).sort()) {
       if (!name.endsWith(ext)) continue;
       const original = path.join(dir, name);
@@ -19,8 +21,9 @@ function stage(bundle, output, { sha, runId, attempt }) {
       const prefix = `pund-it-meeting-assistant-${sha}-run${runId}-attempt${attempt}-x64`;
       const destination = `${prefix}-${folder}-${name}`;
       const copy = (source, filename) => {
+        if (!fs.lstatSync(source).isFile()) throw new Error("Delivery source must be a regular file");
         fs.copyFileSync(source, path.join(output, filename), fs.constants.COPYFILE_EXCL);
-        const bytes = fs.readFileSync(source);
+        const bytes = fs.readFileSync(path.join(output, filename));
         files.push({ original: path.relative(bundle, source).split(path.sep).join('/'), filename,
           size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') });
       };

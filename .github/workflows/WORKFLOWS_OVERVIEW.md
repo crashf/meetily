@@ -346,4 +346,4 @@ For issues with workflows:
 
 ## Pund-IT controlled rebrand delivery
 
-For the artifact-only Windows workflow, exact-SHA verification and recovered original Hermes operator route, see [Distribution](../../docs/DISTRIBUTION.md). This path does not replace the normal release.
+For the artifact-only Windows workflow, exact-SHA verification and artifact provenance, see [Distribution](../../docs/DISTRIBUTION.md). This path does not replace the normal release.

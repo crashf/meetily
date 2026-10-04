@@ -185,6 +185,11 @@ pub async fn wake_audio_connection_for_swap(speaker_device_name: &str) -> Result
 
 /// Simplified recording manager that coordinates all audio components
 pub struct RecordingManager {
+    shutdown: super::lifecycle_policy::ShutdownProgress,
+    save_failed: bool,
+    startup_failed: bool,
+    startup_transcription: Option<mpsc::UnboundedReceiver<AudioChunk>>,
+    recovery_drain_error: Option<String>,
     state: Arc<RecordingState>,
     stream_manager: AudioStreamManager,
     pipeline_manager: AudioPipelineManager,
@@ -205,6 +210,11 @@ impl RecordingManager {
         let (device_monitor, device_event_receiver) = AudioDeviceMonitor::new();
 
         Self {
+            shutdown: Default::default(),
+            save_failed: false,
+            startup_failed: false,
+            startup_transcription: None,
+            recovery_drain_error: None,
             state,
             stream_manager,
             pipeline_manager,
@@ -230,6 +240,7 @@ impl RecordingManager {
         microphone_device: Option<Arc<AudioDevice>>,
         system_device: Option<Arc<AudioDevice>>,
         auto_save: bool,
+        admitted: impl Fn() -> bool,
     ) -> std::result::Result<mpsc::UnboundedReceiver<AudioChunk>, RecordingStartError> {
         info!("Starting recording manager (auto_save: {})", auto_save);
 
@@ -279,16 +290,23 @@ impl RecordingManager {
         self.recording_saver.start_accumulation(auto_save, recording_receiver);
         self.recording_saver.set_device_info(
             microphone_device.as_ref().map(|d| d.name.clone()),
-            system_device.as_ref().map(|d| d.name.clone())
+            system_device.as_ref().map(|d| d.name.clone()),
         );
 
+        self.startup_transcription=Some(transcription_receiver);
         // Give the pipeline a moment to fully initialize before starting streams
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // Start audio streams - they send RAW unmixed chunks to pipeline for mixing
-        // Pipeline handles mixing and distribution to both recording and transcription
-        self.stream_manager.start_streams(microphone_device.clone(), system_device.clone(), None).await?;
-
+        if !admitted() {
+            return Err(self.rollback_start("Start cancelled before capture".into()).await);
+        }
+        // Stream creation may partially acquire resources before returning an error.
+        if let Err(e) = self.stream_manager.start_streams(microphone_device.clone(), system_device.clone(), None).await {
+            return Err(self.rollback_start(format!("Stream initialization failed: {}", e)).await);
+        }
+        if !admitted() {
+            return Err(self.rollback_start("Start superseded during stream initialization".into()).await);
+        }
         // Start device monitoring to detect disconnects
         if let Some(ref mut monitor) = self.device_monitor {
             if let Err(e) = monitor.start_monitoring(microphone_device, system_device) {
@@ -302,8 +320,23 @@ impl RecordingManager {
         info!("Recording manager started successfully with {} active streams",
                self.stream_manager.active_stream_count());
 
-        Ok(transcription_receiver)
+        Ok(self.startup_transcription.take().expect("startup receiver retained"))
     }
+
+    /// Rollback is independent of successful-start publication. Every failure is
+    /// observed; the caller must retain this manager if cleanup is not durable.
+    async fn rollback_start(&mut self, reason: String) -> RecordingStartError {
+        let flushed = self.stop_streams_and_force_flush().await.map_err(|e| e.to_string());
+        let persisted = self.preserve_recoverable_audio().await;
+        if flushed.is_err() || persisted.is_err() || self.startup_transcription.is_some() {
+            self.startup_failed = true;
+            self.mark_save_failed(); // explicit recovery eligibility, never successful-save eligibility
+        }
+        RecordingStartError::Other(anyhow::Error::msg(format!("{}; rollback flush: {:?}; audio persistence: {:?}", reason, flushed, persisted)))
+    }
+    pub fn mark_interrupted_start(&mut self) { self.startup_failed=true;self.mark_save_failed();self.state.stop_recording(); }
+    pub fn take_startup_transcription(&mut self) -> Option<mpsc::UnboundedReceiver<AudioChunk>> { self.startup_transcription.take() }
+    pub fn startup_recovery_required(&self) -> bool { self.startup_failed }
 
     /// Stop recording streams without saving (for use when waiting for transcription)
     pub async fn stop_streams_only(&mut self) -> Result<()> {
@@ -345,23 +378,49 @@ impl RecordingManager {
         // Stop recording state first - this clears device references
         self.state.stop_recording();
 
-        // Stop audio streams immediately
-        if let Err(e) = self.stream_manager.stop_streams() {
-            error!("Error stopping audio streams: {}", e);
+        let mut shutdown_error = self.shutdown.check().err()
+            .or_else(|| self.recovery_drain_error.clone());
+        if !self.shutdown.streams_stopped {
+            let result = self
+                .stream_manager
+                .stop_streams()
+                .map_err(|e| e.to_string());
+            if let Err(e) = self.shutdown.stream_result(result) { shutdown_error = Some(e); }
         }
-
-        // CRITICAL: Force pipeline to flush ALL accumulated audio before stopping
-        debug!("💨 Forcing pipeline to flush accumulated audio immediately");
-        if let Err(e) = self.pipeline_manager.force_flush_and_stop().await {
-            error!("Error during force flush: {}", e);
+        if !self.shutdown.pipeline_stopped {
+            let result = self
+                .pipeline_manager
+                .force_flush_and_stop()
+                .await
+                .map_err(|e| e.to_string());
+            if let Err(e) = self.shutdown.pipeline_result(result) { shutdown_error = Some(e); }
+            // The handle has been consumed/joined even when the task failed.
+            self.shutdown.pipeline_stopped = true;
         }
 
         // CRITICAL: Full cleanup to release all Arc references and resources
         // This ensures microphone is released even if Drop is delayed
         self.state.cleanup();
 
+        if let Some(e) = shutdown_error { self.recording_saver.mark_failed_metadata();return Err(anyhow::Error::msg(e)); }
         info!("✅ Recording streams stopped with immediate flush completed");
         Ok(())
+    }
+
+    pub fn transcript_sink(&self) -> super::recording_saver::TranscriptSink { self.recording_saver.transcript_sink() }
+    pub async fn persist_failed_recovery_transcripts(&mut self) -> Result<(), String> { self.recording_saver.persist_failed_recovery_transcripts().await }
+    pub fn recovery_publication_task(&self) -> Result<Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>, String> { self.recording_saver.recovery_publication_task() }
+    pub fn mark_save_failed(&mut self) { self.save_failed = true; self.recording_saver.mark_failed_metadata(); }
+    pub fn recovery_drain_error(&self) -> Option<String> { self.recovery_drain_error.clone() }
+    pub fn mark_recovery_drain_error(&mut self, e: String) { self.recovery_drain_error = Some(e);self.recording_saver.mark_failed_metadata(); }
+    pub fn has_terminal_shutdown_error(&self) -> bool { self.shutdown.terminal_error.is_some() || self.save_failed || self.recovery_drain_error.is_some() }
+
+    pub fn failed_session_resources_closed(&self) -> bool {
+        (self.shutdown.terminal_error.is_some() || self.save_failed || self.recovery_drain_error.is_some()) && self.shutdown.streams_stopped && self.shutdown.pipeline_stopped
+    }
+
+    pub async fn preserve_recoverable_audio(&mut self) -> Result<(), String> {
+        self.recording_saver.preserve_recoverable_audio().await
     }
 
     /// Save recording after transcription is complete
@@ -382,7 +441,7 @@ impl RecordingManager {
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
+                return Err(anyhow::Error::msg(e));
             }
         }
 
@@ -421,7 +480,7 @@ impl RecordingManager {
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
+                return Err(anyhow::Error::msg(e));
             }
         }
 

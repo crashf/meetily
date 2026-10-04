@@ -9,7 +9,7 @@ import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import Analytics from '@/lib/analytics';
-import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import type { TranscriptionErrorPayload } from '@/services/transcriptService';
 
 interface RecordingControlsProps {
@@ -44,6 +44,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 }) => {
   // Use global recording state context for pause state (syncs with tray operations)
   const recordingState = useRecordingState();
+  const latestState=useRef(recordingState);latestState.current=recordingState;
   const isPaused = recordingState.isPaused;
   const isStartingRecording = recordingState.isStartingRecording;
 
@@ -148,12 +149,20 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       const savePath = `${dataDir}/recording-${timestamp}.wav`;
       console.log('Saving recording to:', savePath);
       console.log('About to call stop_recording command');
-      const result = await invoke('stop_recording', {
+      const result = await invoke<boolean>('stop_recording', {
         args: {
           save_path: savePath
         }
       });
       console.log('stop_recording command completed successfully:', result);
+      if (result !== true) {
+        setIsProcessing(false);
+        // No post-processing callback for recovered/no-op completion.
+        const active=await invoke<boolean>('is_recording').catch(()=>null);
+        if(active!==null && latestState.current.status===RecordingStatus.STOPPING)latestState.current.setStatus(active?RecordingStatus.RECORDING:RecordingStatus.IDLE);
+        window.dispatchEvent(new Event('recording-recovery-refresh'));
+        return;
+      }
       setRecordingPath(savePath);
       // setShowPlayback(true);
       setIsProcessing(false);
@@ -179,7 +188,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         }
       }
       setIsProcessing(false);
-      onRecordingStop(false);
+      setDeviceError({title:'Recording stop failed',message:String(error)});
+      // Keep retained native owner actionable through the persistent recovery panel.
+      const generation=await invoke<number|null>('recording_recovery_status').catch(()=>null);
+      if(generation===null){const active=await invoke<boolean>('is_recording').catch(()=>null);if(active!==null && latestState.current.status===RecordingStatus.STOPPING)latestState.current.setStatus(active ? RecordingStatus.RECORDING : RecordingStatus.ERROR);}
+      window.dispatchEvent(new Event('recording-recovery-refresh'));
     } finally {
       setIsStopping(false);
     }

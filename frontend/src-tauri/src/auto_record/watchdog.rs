@@ -1,8 +1,8 @@
 // src/auto_record/watchdog.rs
 // Keeps the trigger server alive: respawns on shutdown signal (config change),
 // retries after bind failures (port busy at boot, e.g. single-instance overlap).
-use super::server::{self, ServerExit};
 use super::load_config;
+use super::server::{self, ServerExit};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tauri::{AppHandle, Runtime};
@@ -20,6 +20,16 @@ pub async fn heartbeat_monitor<R: Runtime>(app: AppHandle<R>) {
         let session = super::STATE.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let Some(session) = session else { continue };
         if session.trigger != "extension" {
+            continue;
+        }
+        // Failed startup owns retryable cleanup despite never publishing live
+        // capture. Browser lifetime/heartbeat must not own this recovery task.
+        if session.cleanup_error.is_some() {
+            let _trigger_guard = server::TRIGGER_LOCK.lock().await;
+            let current = super::STATE.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(current) = current.filter(|s| s.trigger == "extension" && s.native_generation == session.native_generation && s.cleanup_error.is_some()) {
+                let _ = super::cleanup_superseded(&app, current).await;
+            }
             continue;
         }
         let rec = crate::audio::recording_commands::is_recording().await;
@@ -43,22 +53,60 @@ pub async fn heartbeat_monitor<R: Runtime>(app: AppHandle<R>) {
                     session.meeting_name
                 ),
             );
-            super::notify::notify(
-                &app,
-                "Recording stopped (browser silent)",
-                &format!("No heartbeat from the meeting for {} min — saved '{}'. If the meeting was still live, the extension lost connection.", HEARTBEAT_DEADMAN_MS / 60_000, session.meeting_name),
-            );
+            // Reconcile after acquiring ownership: a queued watchdog decision
+            // must not stop a newer session or one whose heartbeat recovered.
+            let _trigger_guard = server::TRIGGER_LOCK.lock().await;
+            let current = super::STATE.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let Some(current) = current else { continue };
+            if current.started_at_ms != session.started_at_ms
+                || super::now_ms().saturating_sub(current.last_heartbeat_ms) <= HEARTBEAT_DEADMAN_MS
+                || !crate::audio::recording_commands::is_recording().await {
+                continue;
+            }
             let save_path = crate::audio::recording_commands::get_meeting_folder_path()
                 .await
                 .unwrap_or(None)
                 .unwrap_or_default();
             let args = crate::audio::recording_commands::RecordingArgs { save_path };
-            match crate::audio::recording_commands::stop_recording(app.clone(), args).await {
-                Ok(()) => {
-                    *super::STATE.session.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                    super::emit_event(&app, "auto-record-stopped",
-                        serde_json::json!({"reason": "heartbeat-deadman", "meeting_name": session.meeting_name}));
-                    super::emit_post_processing_complete(&app);
+            let expected_generation = session.native_generation;
+            match crate::audio::recording_commands::stop_recording_if_generation(
+                app.clone(),
+                args,
+                session.native_generation,
+                move || {
+                    let current = super::STATE
+                        .session
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    current.as_ref().map_or(false, |s| {
+                        s.trigger == "extension"
+                            && s.native_generation == expected_generation
+                            && super::now_ms().saturating_sub(s.last_heartbeat_ms)
+                                > HEARTBEAT_DEADMAN_MS
+                    })
+                },
+            )
+            .await
+            {
+                Ok(did_stop) => {
+                    if did_stop {
+                        *super::STATE
+                            .session
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = None;
+                        super::notify::notify(
+                &app,
+                "Recording stopped (browser silent)",
+                &format!("No heartbeat from the meeting for {} min — saved '{}'. If the meeting was still live, the extension lost connection.", HEARTBEAT_DEADMAN_MS / 60_000, session.meeting_name),
+            );
+
+                        super::emit_event(
+                            &app,
+                            "auto-record-stopped",
+                            serde_json::json!({"reason": "heartbeat-deadman", "meeting_name": session.meeting_name}),
+                        );
+                        super::emit_post_processing_complete(&app);
+                    }
                 }
                 Err(e) => log::error!("auto-record: deadman stop failed: {}", e),
             }

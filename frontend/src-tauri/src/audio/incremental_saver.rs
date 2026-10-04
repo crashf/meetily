@@ -7,6 +7,27 @@ use serde::{Serialize, Deserialize};
 
 use super::ffmpeg::find_ffmpeg_path;
 
+/// Publish only synced content; Windows MoveFileExW WRITE_THROUGH avoids an
+/// unsupported read-only directory FlushFileBuffers call.
+pub(super) fn publish_durable(temp: &std::path::Path, target: &std::path::Path) -> Result<()> {
+    std::fs::OpenOptions::new().write(true).open(temp)?.sync_all()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" { fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32; }
+        let from: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
+        let to: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+        if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0x1 | 0x8) } == 0 { return Err(std::io::Error::last_os_error().into()); }
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(temp, target)?;
+        if let Some(parent) = target.parent() { std::fs::File::open(parent)?.sync_all()?; }
+    }
+    Ok(())
+}
+
 /// Audio data without device type (we only store mixed audio)
 #[derive(Clone)]
 struct AudioData {
@@ -92,13 +113,17 @@ impl IncrementalAudioSaver {
         let checkpoint_path = self.checkpoints_dir
             .join(format!("audio_chunk_{:03}.mp4", self.checkpoint_count));
 
+        // Encode into a fresh temporary path; a failed partial file must never
+        // poison the final checkpoint name used by subsequent retries.
+        let temporary_path = self.checkpoints_dir.join(format!("checkpoint-{}.pending", uuid::Uuid::new_v4()));
         // Encode and save checkpoint
         encode_single_audio(
             bytemuck::cast_slice(&audio_data),
             self.sample_rate,
             1,  // mono
-            &checkpoint_path
-        )?;
+            &temporary_path
+        ).map_err(|e| { let _ = std::fs::remove_file(&temporary_path); e })?;
+        publish_durable(&temporary_path, &checkpoint_path).map_err(|e| { let _ = std::fs::remove_file(&temporary_path); e })?;
 
         let duration_seconds = audio_data.len() as f32 / self.sample_rate as f32;
         self.checkpoint_count += 1;
@@ -108,6 +133,15 @@ impl IncrementalAudioSaver {
               duration_seconds,
               audio_data.len());
 
+        Ok(())
+    }
+
+    /// Persist only the recoverable tail; do not merge/delete checkpoints or claim success.
+    pub fn persist_tail(&mut self) -> Result<()> {
+        if !self.checkpoint_buffer.is_empty() {
+            self.save_checkpoint()?;
+            self.checkpoint_buffer.clear(); // clear only after a successful durable write
+        }
         Ok(())
     }
 
@@ -130,7 +164,11 @@ impl IncrementalAudioSaver {
 
         // Merge all checkpoints using FFmpeg concat
         let final_audio_path = self.meeting_folder.join("audio.mp4");
-        self.merge_checkpoints(&final_audio_path).await?;
+        let pending = self.meeting_folder.join(format!("audio.{}.pending.mp4", uuid::Uuid::new_v4()));
+        if let Err(e) = self.merge_checkpoints(&pending).await {
+            let _ = std::fs::remove_file(&pending); return Err(e);
+        }
+        if let Err(e)=publish_durable(&pending,&final_audio_path){let _=std::fs::remove_file(&pending);return Err(e);}
 
         // Clean up checkpoints directory
         info!("Cleaning up {} checkpoint files", self.checkpoint_count);

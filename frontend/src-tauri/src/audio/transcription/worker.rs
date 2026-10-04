@@ -51,7 +51,7 @@ pub struct TranscriptUpdate {
 pub fn start_transcription_task<R: Runtime>(
     app: AppHandle<R>,
     transcription_receiver: tokio::sync::mpsc::UnboundedReceiver<AudioChunk>,
-) -> tokio::task::JoinHandle<()> {
+) -> tokio::task::JoinHandle<Result<(), String>> {
     tokio::spawn(async move {
         info!("🚀 Starting optimized parallel transcription task - guaranteeing zero chunk loss");
 
@@ -66,10 +66,11 @@ pub fn start_transcription_task<R: Runtime>(
                     "actionable": true,
                     "phase": "active"
                 }));
-                return;
+                return Err(format!("Transcription engine initialization failed: {}", e));
             }
         };
 
+        let drain_failed=Arc::new(AtomicBool::new(false));
         // Create parallel workers for faster processing while preserving ALL chunks
         const NUM_WORKERS: usize = 1; // Serial processing ensures transcripts emit in chronological order
         let (work_sender, work_receiver) = tokio::sync::mpsc::unbounded_channel::<AudioChunk>();
@@ -85,6 +86,7 @@ pub fn start_transcription_task<R: Runtime>(
         // Spawn worker tasks
         let mut worker_handles = Vec::new();
         for worker_id in 0..NUM_WORKERS {
+            let drain_failed=drain_failed.clone();
             let engine_clone = match &transcription_engine {
                 TranscriptionEngine::Whisper(e) => TranscriptionEngine::Whisper(e.clone()),
                 TranscriptionEngine::Parakeet(e) => TranscriptionEngine::Parakeet(e.clone()),
@@ -142,7 +144,8 @@ pub fn start_transcription_task<R: Runtime>(
                             // Check if model is still loaded before processing
                             if !engine_clone.is_model_loaded().await {
                                 warn!("⚠️ Worker {}: Model unloaded, but continuing to preserve chunk {}", worker_id, chunk.chunk_id);
-                                // Still count as completed even if we can't process
+                                drain_failed.store(true, Ordering::SeqCst);
+                                // Count handled input but explicitly fail durable drain
                                 chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
                                 continue;
                             }
@@ -219,6 +222,7 @@ pub fn start_transcription_task<R: Runtime>(
 
                                         if let Err(e) = app_clone.emit("transcript-update", &update)
                                         {
+                                            drain_failed.store(true, Ordering::SeqCst);
                                             error!(
                                                 "Worker {}: Failed to emit transcript update: {}",
                                                 worker_id, e
@@ -237,11 +241,13 @@ pub fn start_transcription_task<R: Runtime>(
                                             continue;
                                         }
                                         TranscriptionError::ModelNotLoaded => {
+                                            drain_failed.store(true, Ordering::SeqCst);
                                             warn!("Worker {}: Model unloaded during transcription", worker_id);
                                             chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
                                             continue;
                                         }
                                         _ => {
+                                            drain_failed.store(true, Ordering::SeqCst);
                                             warn!("Worker {}: Transcription failed: {}", worker_id, e);
                                             let _ = app_clone.emit("transcription-warning", e.to_string());
                                         }
@@ -322,6 +328,7 @@ pub fn start_transcription_task<R: Runtime>(
             );
 
             if let Err(_) = work_sender.send(chunk) {
+                drain_failed.store(true, Ordering::SeqCst);
                 error!("❌ Failed to send chunk to workers - this should not happen!");
                 break;
             }
@@ -344,6 +351,7 @@ pub fn start_transcription_task<R: Runtime>(
         // Wait for all workers to complete
         for (worker_id, handle) in worker_handles.into_iter().enumerate() {
             if let Err(e) = handle.await {
+                drain_failed.store(true, Ordering::SeqCst);
                 error!("❌ Worker {} panicked: {:?}", worker_id, e);
             } else {
                 info!("✅ Worker {} completed successfully", worker_id);
@@ -377,6 +385,7 @@ pub fn start_transcription_task<R: Runtime>(
                     MAX_VERIFICATION_ATTEMPTS, final_queued, final_completed
                 );
 
+                drain_failed.store(true, Ordering::SeqCst);
                 // Emit critical error event
                 let _ = app.emit(
                     "transcript-chunk-loss-detected",
@@ -391,7 +400,9 @@ pub fn start_transcription_task<R: Runtime>(
             }
         }
 
+        if drain_failed.load(Ordering::SeqCst) { return Err("Transcription drain lost accepted speech; recovery owner retained".into()); }
         info!("✅ Parallel transcription task completed - all workers finished, ready for model unload");
+        Ok(())
     })
 }
 

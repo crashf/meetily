@@ -6,7 +6,7 @@ Product-facing documentation uses **Pund-IT Meeting Assistant**. Root README no 
 
 - `meetily.exe`, Rust crates/binary names and `llama-helper`: packaging/runtime identifiers, not display branding.
 - `com.meetily.ai`, existing `meetily`/`Meetily` model/data/log folders and persisted preference keys: preserve continuity; no undocumented migration.
-- Extension bearer token, port and loopback routes: protocol/pairing compatibility, not marketing.
+- Extension bearer token, port and loopback routes retain pairing identifiers, not mixed-version wire compatibility. Ownership protocol 2 requires request IDs: upgrade desktop and extension together; older/newer mixed versions cannot record.
 - `MEETILY_RSA_PUBLIC_KEY` and other existing CI secret/configuration identifiers: build compatibility; no replacement credentials introduced.
 - Existing release/test workflow artifact prefixes and upstream-origin source URLs: historical/provenance or unchanged normal-release paths. The new controlled Windows workflow emits uniquely branded delivery copies.
 - `docs/Meetily-6.png`, older screenshots/GIFs: legacy asset filenames; root docs no longer embed these as current branded UI. Frontend/icon replacement is owned by the separate worker.

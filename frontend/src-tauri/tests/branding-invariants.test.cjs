@@ -12,27 +12,35 @@ const brand = 'Pund-IT Meeting Assistant';
 test('native display metadata changes without identity/security/updater changes',()=>{
  const p='frontend/src-tauri/tauri.conf.json'; const now=JSON.parse(read(p)), before=JSON.parse(old(p));
  assert.equal(now.productName,brand); assert.equal(now.app.windows[0].title,brand);
- before.productName=brand; before.app.windows[0].title=brand;
+ before.productName=brand; before.app.windows[0].title=brand; before.version="0.4.2";
  before.bundle.windows.nsis={template:'config/installer-compat.nsi'};
  before.bundle.windows.wix={upgradeCode:'293c4b6a-4aa1-5ef8-9cfd-823fc6139987'};
  assert.deepEqual(now,before);
 });
-test('Rust changes are presentation-only; logger, paths, DB, models and settings remain byte-identical',()=>{
+test('authorized lifecycle changes are scoped; logger, paths, DB, models and settings remain unchanged',()=>{
  const changed=execFileSync('git',['diff',base,'--name-only','--','frontend/src-tauri'],{cwd:root,encoding:'utf8'}).trim().split('\n');
- for(const p of changed.filter(p=>p.endsWith('.rs'))) assert.equal(read(p),old(p).replaceAll('Meetily',brand),p);
- for(const p of ['Cargo.toml','src/lib.rs','src/main.rs','src/notifications/settings.rs','src/audio/recording_preferences.rs','src/auto_record/mod.rs','src/summary/templates/loader.rs','tauri.windows.conf.json']) {
-  const full='frontend/src-tauri/'+p; assert.equal(read(full),old(full),p);
+ const lifecycle=new Set(['frontend/src-tauri/src/audio/transcription/worker.rs','frontend/src-tauri/src/lib.rs','frontend/src-tauri/src/audio/recording_saver.rs','frontend/src-tauri/src/audio/incremental_saver.rs','frontend/src-tauri/src/audio/common.rs','frontend/src-tauri/src/audio/recording_commands.rs','frontend/src-tauri/src/auto_record/server.rs','frontend/src-tauri/src/auto_record/watchdog.rs','frontend/src-tauri/src/tray.rs','frontend/src-tauri/src/audio/lifecycle_policy.rs','frontend/src-tauri/src/audio/mod.rs','frontend/src-tauri/src/audio/pipeline.rs','frontend/src-tauri/src/audio/recording_manager.rs','frontend/src-tauri/src/auto_record/audio_gate.rs','frontend/src-tauri/src/auto_record/mod.rs']);
+ for(const p of changed.filter(p=>p.endsWith('.rs')&&!lifecycle.has(p))) assert.equal(read(p),old(p).replaceAll('Meetily',brand),p);
+ for(const p of ['Cargo.toml','src/main.rs','src/notifications/settings.rs','src/audio/recording_preferences.rs','src/summary/templates/loader.rs','tauri.windows.conf.json']) {
+  const full='frontend/src-tauri/'+p; assert.equal(read(full),p==='Cargo.toml'?old(full).replace('version = "0.4.1"','version = "0.4.2"'):old(full),p);
  }
+ const lib='frontend/src-tauri/src/lib.rs';
+ const stripStop=source=>{const a=source.indexOf('#[tauri::command]\nasync fn stop_recording'),b=source.indexOf('#[tauri::command]\nasync fn is_recording',a);assert.ok(a>=0&&b>a);return (source.slice(0,a)+source.slice(b)).replace('            recover_failed_recording,\n','').replace('            recording_recovery_status,\n','')};
+ assert.equal(stripStop(read(lib)),stripStop(old(lib)), 'only desktop Stop adapter may differ; logger/start/bootstrap byte identity');
  assert.ok(!read('frontend/src-tauri/src/main.rs').includes('env_logger::'));
 });
 test('extension manifest changes only presentation fields',()=>{
  const now=JSON.parse(read('extension/manifest.json')), before=JSON.parse(old('extension/manifest.json'));
  assert.equal(now.name,brand+' Auto-Record'); assert.equal(now.action.default_title,brand+' Auto-Record');
- for(const o of [now,before]) {delete o.name; delete o.description; delete o.action.default_title;}
+ for(const o of [now,before]) {delete o.name; delete o.description; delete o.action.default_title; delete o.version;}
  assert.deepEqual(now,before);
 });
-test('extension code preserves all storage, alarms, message types, pairing and transport behavior',()=>{
- for(const f of ['background.js','content.js','options.js','options.html']) assert.equal(read('extension/'+f),old('extension/'+f).replaceAll('Meetily',brand),f);
+test('extension pairing options and icon sizes preserve compatibility',()=>{
+ let js=read('extension/options.js'); const original=old('extension/options.js').replaceAll('Meetily',brand);
+ js=js.replace('// Legacy preference remains stored for compatibility but cannot authorize capture.\n$(\'force\').disabled = true;\n\n',original.slice(original.indexOf("$('force').addEventListener('change'"),original.indexOf('// Manual start/stop')));
+ assert.equal(js,original,'pairing/manual controls unchanged except legacy disablement');
+ let html=read('extension/options.html').replace('<input id="force" type="checkbox" disabled />','<input id="force" type="checkbox" />').replace('Legacy URL-only trigger disabled for safety — use manual Start recording now','Force trigger on meeting URL only (no UI checks — use if detection fails)');
+ assert.equal(html,old('extension/options.html').replaceAll('Meetily',brand));
  for(const n of [16,48,128]) {
   const buf=fs.readFileSync(path.join(root,`extension/icons/${n}.png`));
   assert.equal(buf.subarray(1,4).toString(),'PNG'); assert.equal(buf.readUInt32BE(16),n); assert.equal(buf.readUInt32BE(20),n);
@@ -94,12 +102,18 @@ test('legacy Run cleanup is non-update, only exact quoted/unquoted installed bin
  assert.equal(block, "    ReadRegStr $R7 HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\" \"${LEGACYPRODUCTNAME}\"\n    ${If} $R7 == \"$INSTDIR\\${MAINBINARYNAME}.exe\"\n    ${OrIf} $R7 == \"$\\\"$INSTDIR\\${MAINBINARYNAME}.exe$\\\"\"\n      DeleteRegValue HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\" \"${LEGACYPRODUCTNAME}\"\n    ${EndIf}\n");
 });
 test('entire normalized installer is byte-identical to exact CLI 2.11.1 upstream',()=>{
- let s=installer();
+ let s=installer().replace("Var ValidatedPredecessor\n","").replace('${OrIf} ${FileExists} "$ValidatedPredecessor\\${MAINBINARYNAME}.exe"','${OrIf} ${FileExists} "$INSTDIR\\${MAINBINARYNAME}.exe"');
+ for(const name of ['reparse safety','install reparse validation','uninstall reparse validation','appdata reparse validation','predecessor preflight','shell context restore']) {
+  s=s.replace(new RegExp(String.raw`^[ \t]*; PUN-827 BEGIN ${name}\n[\s\S]*?^[ \t]*; PUN-827 END ${name}\n`,'m'),'');
+ }
+ s=s.replace('  ${If} $DeleteAppDataCheckboxState = 1\n  ${AndIf} $UpdateMode <> 1\n    SetShellVarContext current\n  ${EndIf}\n','');
+ s=s.replace('FunctionEnd\n\n\n\nSection EarlyChecks','FunctionEnd\n\n\nSection EarlyChecks');
  for(const name of ['legacy shortcut cleanup','legacy Run cleanup']) {
   correctionBlock(s,name);
   s=s.replace(new RegExp(`    ; PUN-827 BEGIN ${name}[^\\n]*\\n[\\s\\S]*?    ; PUN-827 END ${name}\\n`),'');
  }
  s=s.replace(/    ; PUN-827 BEGIN MSI display-name compatibility\n[\s\S]*?    ; PUN-827 END MSI display-name compatibility\n/, '    StrCmp "$R0$R1" "${LEGACYPRODUCTNAME}${MANUFACTURER}" 0 wix_loop\n');
+ s=s.replace('    ; PUN-827 BEGIN skip non-MSI matching entry\n    StrCmp $R0 0 0 wix_loop\n    ; PUN-827 END skip non-MSI matching entry\n','    StrCmp $R0 0 0 wix_loop_done\n');
  s=s.replace('; PUN-827: keep upgrade registry/directory identity independent of display branding.\n!define LEGACYPRODUCTNAME "meetily"\n','').replaceAll('${LEGACYPRODUCTNAME}','${PRODUCTNAME}');
  assert.equal(crypto.createHash('sha256').update(s).digest('hex'),'ee84148e405adc4d736a46456dd8345a644751bd1f28a335dd7fd833a32d7c3e');
 });
@@ -110,5 +124,15 @@ test('MSI predecessor detection accepts both display names with exact publisher 
  const accepts=(name,publisher)=>publisher==='Zackriya' && ['meetily','Pund-IT Meeting Assistant'].includes(name);
  assert.ok(accepts('meetily','Zackriya')); assert.ok(accepts('Pund-IT Meeting Assistant','Zackriya'));
  assert.ok(!accepts('Other','Zackriya')); assert.ok(!accepts('meetily','Other'));
- assert.ok(installer().includes('${StrLoc} $R0 $R1 "msiexec" ">"\n    StrCmp $R0 0 0 wix_loop_done'));
+ assert.ok(installer().includes('${StrLoc} $R0 $R1 "msiexec" ">"\n    ; PUN-827 BEGIN skip non-MSI matching entry\n    StrCmp $R0 0 0 wix_loop'));
+ const entries=[{name:'Pund-IT Meeting Assistant',publisher:'Zackriya',command:'uninstall.exe'},{name:'meetily',publisher:'Zackriya',command:'MsiExec.exe /X{legacy}'}];
+ assert.equal(entries.find(e=>accepts(e.name,e.publisher) && e.command.toLowerCase().startsWith('msiexec')),entries[1]);
+});
+test('installer safety validates affected trees before extraction/deletion (source contract)',()=>{
+ const s=installer();assert.ok(s.includes('GetFileAttributesW'));assert.ok(s.includes('& 0x400'));
+ for(const marker of ['Call ValidateTree','Call un.ValidateTree'])assert.ok(s.includes(marker));
+ for(const [section,check,action] of [['Section Install','Call ValidateTree','SetOutPath $INSTDIR'],['Section Uninstall','Call un.ValidateTree','Delete "$INSTDIR']]) {
+  const start=s.indexOf(section),end=s.indexOf('SectionEnd',start);assert.ok(start>=0 && end>start);
+  const body=s.slice(start,end),a=body.indexOf(check),b=body.indexOf(action);assert.ok(a>=0 && b>=0 && a<b);
+ }
 });

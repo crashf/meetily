@@ -1,5 +1,6 @@
 'use client'
 
+import { RecordingRecoveryPanel } from '@/components/RecordingRecoveryPanel';
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
@@ -223,6 +224,7 @@ export default function ClientLayout({
     <>
         <AnalyticsProvider>
           <RecordingStateProvider>
+            <RecordingRecoveryPanel />
             <TranscriptProvider>
               <ConfigProvider>
                 <OllamaDownloadProvider>

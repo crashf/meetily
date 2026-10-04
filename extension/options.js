@@ -51,12 +51,8 @@ $('notify').addEventListener('change', async () => {
 
 // Force trigger: meeting-URL alone counts as in-call (DOM-free, audio-free).
 // For when detection selectors rot or Meet changes its render split.
-$('force').addEventListener('change', async () => {
-  await chrome.storage.local.set({ forceEnabled: $('force').checked });
-  $('status').innerHTML = $('force').checked
-    ? '<span class="ok">Force trigger ON — recording starts when a meeting URL is open (no UI checks).</span>'
-    : 'Force trigger off — normal detection.';
-});
+// Legacy preference remains stored for compatibility but cannot authorize capture.
+$('force').disabled = true;
 
 // Manual start/stop: records immediately regardless of detection state.
 $('forceStart').addEventListener('click', async () => {

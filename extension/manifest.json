@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Pund-IT Meeting Assistant Auto-Record",
-  "version": "1.3.9",
+  "version": "1.4.0",
   "description": "Detects Google Meet, Teams and Zoom meetings and starts recording in the local Pund-IT Meeting Assistant app.",
   "permissions": [
     "storage",

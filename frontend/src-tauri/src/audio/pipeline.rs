@@ -792,6 +792,7 @@ impl AudioPipeline {
     pub async fn run(mut self) -> Result<()> {
         info!("VAD-driven audio pipeline started - segments sent in real-time based on speech detection");
 
+        let mut flush_error = None;
         // CRITICAL FIX: Continue processing until channel is closed, not based on recording state
         // This ensures ALL chunks are processed during shutdown, fixing premature meeting completion
         // Previous bug: Loop checked `while self.state.is_recording()` which caused early exit when
@@ -807,7 +808,7 @@ impl AudioPipeline {
                     // Multiple flush signals may be sent to ensure processing
                     if chunk.chunk_id >= u64::MAX - 10 {
                         info!("📥 Received FLUSH signal #{} - flushing VAD processor", u64::MAX - chunk.chunk_id);
-                        self.flush_remaining_audio()?;
+                        if let Err(e) = self.flush_remaining_audio() { flush_error = Some(e); }
                         // Continue processing to handle any remaining chunks
                         continue;
                     }
@@ -916,7 +917,8 @@ impl AudioPipeline {
         }
 
         // Flush any remaining VAD segments
-        self.flush_remaining_audio()?;
+        if let Err(e) = self.flush_remaining_audio() { flush_error = Some(e); }
+        if let Some(e) = flush_error { return Err(e); }
 
         info!("VAD-driven audio pipeline ended");
         Ok(())
@@ -945,7 +947,7 @@ impl AudioPipeline {
                         };
 
                         if let Err(e) = self.transcription_sender.send(transcription_chunk) {
-                            warn!("Failed to send final VAD segment: {}", e);
+                            return Err(anyhow::anyhow!("Failed to send final VAD segment: {}", e));
                         } else {
                             self.chunk_id_counter += 1;
                         }
@@ -956,7 +958,7 @@ impl AudioPipeline {
                 }
             }
             Err(e) => {
-                warn!("Failed to flush VAD processor: {}", e);
+                return Err(anyhow::anyhow!("Failed to flush VAD processor: {}", e));
             }
         }
 
@@ -1036,12 +1038,14 @@ impl AudioPipelineManager {
         self.audio_sender = None;
 
         // Wait for pipeline to finish
-        if let Some(handle) = self.pipeline_handle.take() {
-            match handle.await {
+        if let Some(handle) = self.pipeline_handle.as_mut() {
+            let joined = handle.await;
+            self.pipeline_handle.take(); // only retire after observing completion; cancellation retains handle
+            match joined {
                 Ok(result) => result,
                 Err(e) => {
                     error!("Pipeline task failed: {}", e);
-                    Ok(())
+                    Err(anyhow::anyhow!("Pipeline task failed: {}", e))
                 }
             }
         } else {
@@ -1055,6 +1059,7 @@ impl AudioPipelineManager {
         info!("🚀 Force flushing pipeline - processing ALL accumulated audio immediately");
 
         // If we have a sender, send a special flush signal first
+        let mut flush_error = None;
         if let Some(sender) = &self.audio_sender {
             // Create a special flush chunk to trigger immediate processing
             let flush_chunk = AudioChunk {
@@ -1066,7 +1071,7 @@ impl AudioPipelineManager {
             };
 
             if let Err(e) = sender.send(flush_chunk) {
-                warn!("Failed to send flush signal: {}", e);
+                flush_error = Some(anyhow::anyhow!("Failed to send flush signal: {}", e));
             } else {
                 info!("📤 Sent flush signal to pipeline");
 
@@ -1093,7 +1098,12 @@ impl AudioPipelineManager {
         }
 
         // Now stop normally
-        self.stop().await
+        let result = self.stop().await;
+        result?;
+        if let Some(error) = flush_error {
+            return Err(error);
+        }
+        Ok(())
     }
 }
 

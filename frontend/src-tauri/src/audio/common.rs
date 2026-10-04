@@ -215,6 +215,34 @@ pub(crate) fn split_segment_at_silence(
 mod tests {
     use super::*;
 
+    // No sleep or wall-clock assumptions: hold the exact production lock as
+    // a slow stop, queue duplicate-stop and start, and release finalization.
+    #[tokio::test]
+    async fn test_slow_stop_excludes_duplicate_stop_and_start_until_finalized() {
+        let stop_tail = acquire_engine_lifecycle_lock().await;
+        let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(2);
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(2);
+        let mut tasks = Vec::new();
+        for action in ["duplicate-stop", "new-start"] {
+            let ready = ready_tx.clone();
+            let done = done_tx.clone();
+            tasks.push(tokio::spawn(async move {
+                ready.send(action).await.unwrap();
+                let _lifecycle = acquire_engine_lifecycle_lock().await;
+                done.send(action).await.unwrap();
+            }));
+        }
+        ready_rx.recv().await.unwrap();
+        ready_rx.recv().await.unwrap();
+        assert!(done_rx.try_recv().is_err());
+        // The real stop releases this guard only after final recording events.
+        drop(stop_tail);
+        let first = done_rx.recv().await.unwrap();
+        let second = done_rx.recv().await.unwrap();
+        assert_ne!(first, second);
+        for task in tasks { task.await.unwrap(); }
+    }
+
     #[tokio::test]
     async fn test_engine_lifecycle_lock_serializes_acquirers() {
         let guard = acquire_engine_lifecycle_lock().await;

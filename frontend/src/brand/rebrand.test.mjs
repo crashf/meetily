@@ -37,8 +37,17 @@ test('metadata, onboarding and recovery messaging carry the canonical product na
 });
 test('original asset master and both native platform icon containers exist', () => {
   assert.ok(read('public/pundit-meeting-assistant.svg').includes('Pund-IT Meeting Assistant'));
-  for (const name of ['icon.ico', 'app_icon.ico']) assert.equal(readFileSync(resolve(frontend, 'src-tauri/icons', name)).subarray(0, 4).toString('hex'), '00000100');
-  for (const name of ['icon.icns', 'app_icon.icns']) assert.equal(readFileSync(resolve(frontend, 'src-tauri/icons', name)).subarray(0, 4).toString(), 'icns');
+  for (const name of ['icon.ico', 'app_icon.ico']) {
+    const bytes=readFileSync(resolve(frontend,'src-tauri/icons',name));
+    assert.ok(bytes.length>=6);assert.equal(bytes.readUInt32LE(0),0x10000);
+    const count=bytes.readUInt16LE(4);assert.ok(count>0 && bytes.length>=6+16*count);
+    for(let i=0;i<count;i++){const entry=6+16*i,size=bytes.readUInt32LE(entry+8),offset=bytes.readUInt32LE(entry+12);assert.ok(size>0 && offset>=6+16*count && offset+size<=bytes.length, `${name} entry ${i}`);}
+  }
+  for (const name of ['icon.icns', 'app_icon.icns']) {
+    const bytes=readFileSync(resolve(frontend,'src-tauri/icons',name));
+    assert.ok(bytes.length>=8);assert.equal(bytes.subarray(0,4).toString(),'icns');assert.equal(bytes.readUInt32BE(4),bytes.length);
+    let offset=8,chunks=0;while(offset<bytes.length){assert.ok(offset+8<=bytes.length);const size=bytes.readUInt32BE(offset+4);assert.ok(size>=8 && offset+size<=bytes.length);offset+=size;chunks++;}assert.ok(chunks>0);assert.equal(offset,bytes.length);
+  }
 });
 test('support is Pund-IT; upstream attribution remains explicit', () => {
   const about = read('src/components/About.tsx');

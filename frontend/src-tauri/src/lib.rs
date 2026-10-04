@@ -251,17 +251,11 @@ async fn start_recording<R: Runtime>(
 }
 
 #[tauri::command]
-async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<(), String> {
+async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<bool, String> {
     log_info!("Attempting to stop recording...");
 
-    // Check the actual audio recording system state instead of the flag
-    if !audio::recording_commands::is_recording().await {
-        log_info!("Recording is already stopped");
-        return Ok(());
-    }
-
     // Call the actual audio recording system to stop
-    match audio::recording_commands::stop_recording(
+    match audio::recording_commands::stop_recording_with_outcome(
         app.clone(),
         audio::recording_commands::RecordingArgs {
             save_path: args.save_path.clone(),
@@ -269,7 +263,8 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
     )
     .await
     {
-        Ok(_) => {
+        Ok(false) => { RECORDING_FLAG.store(false, Ordering::SeqCst); tray::update_tray_menu(&app); return Ok(false); }
+        Ok(true) => {
             RECORDING_FLAG.store(false, Ordering::SeqCst);
             tray::update_tray_menu(&app);
 
@@ -302,7 +297,7 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
                 log_info!("Successfully showed recording stopped notification");
             }
 
-            Ok(())
+            Ok(true)
         }
         Err(e) => {
             log_error!("Failed to stop audio recording: {}", e);
@@ -312,6 +307,20 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
             Err(format!("Failed to stop recording: {}", e))
         }
     }
+}
+
+#[tauri::command]
+async fn recording_recovery_status() -> Option<u64> {
+    audio::recording_commands::recovery_generation()
+}
+
+/// Explicit generation-scoped recovery, never a successful-save/summary action.
+#[tauri::command]
+async fn recover_failed_recording<R: Runtime>(app: AppHandle<R>, generation: u64) -> Result<(), String> {
+    audio::recording_commands::recover_failed_recording(app.clone(), generation).await?;
+    RECORDING_FLAG.store(false, Ordering::SeqCst);
+    tray::update_tray_menu(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -698,6 +707,8 @@ pub fn run() {
             auto_record::debug::auto_record_restart_server,
             start_recording,
             stop_recording,
+            recover_failed_recording,
+            recording_recovery_status,
             is_recording,
             get_transcription_status,
             read_audio_file,

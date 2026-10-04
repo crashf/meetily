@@ -18,6 +18,10 @@ pub struct TriggerRequest {
     pub platform: String,
     #[serde(default)]
     pub meeting_name: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub native_generation: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -87,7 +91,9 @@ async fn read_request(stream: &mut TcpStream) -> Result<ParsedRequest, String> {
     let mut authorization = None;
     let mut content_length = 0usize;
     for line in lines {
-        let Some((name, value)) = line.split_once(':') else { continue };
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
         let name = name.trim().to_ascii_lowercase();
         let value = value.trim();
         if name == "authorization" {
@@ -127,6 +133,7 @@ async fn respond(stream: &mut TcpStream, status: u16, payload: &serde_json::Valu
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
         503 => "Service Unavailable",
         _ => "OK",
     };
@@ -143,8 +150,63 @@ async fn respond(stream: &mut TcpStream, status: u16, payload: &serde_json::Valu
     let _ = stream.flush().await;
 }
 
-async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (u16, serde_json::Value) {
+// Serialize session metadata with trigger/watchdog finalization. Native audio
+// has its own shared lifecycle lock; this lock must always be acquired first.
+pub(super) static TRIGGER_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+
+static EXTENSION_REQUESTS: crate::audio::lifecycle_policy::ExtensionRequests = crate::audio::lifecycle_policy::ExtensionRequests::new();
+pub(super) static EXTENSION_START_PENDING: crate::audio::lifecycle_policy::PendingStarts = crate::audio::lifecycle_policy::PendingStarts::new();
+
+async fn handle_trigger<R: Runtime>(
+    app: AppHandle<R>,
+    req: TriggerRequest,
+) -> (u16, serde_json::Value) {
+    // Capture epoch and register a counted RAII ticket before any queue wait.
+    let start_epoch = crate::audio::recording_commands::stop_epoch();
+    let _pending_extension_start = if req.action == "start" { Some(EXTENSION_START_PENDING.register()) } else { None };
+    let request_id = req.request_id.clone();
+    let request_ticket = if req.action == "start" {
+        match &request_id { Some(id) if id.len() == 36 && uuid::Uuid::parse_str(id).is_ok() => Some(EXTENSION_REQUESTS.register(id.clone())), _ => return (400, err_json("start requires request_id")) }
+    } else { None };
+    if req.action == "stop" { if let Some(id) = &request_id { EXTENSION_REQUESTS.cancel(id); } }
+    // Authenticated requests reach here. Publish stop BEFORE either queue.
+    let extension_generation = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        .filter(|s| s.trigger == "extension" && s.request_id == request_id && request_id.is_some()).map(|s| s.native_generation);
+    // Cancel only matching extension tickets. Pending tickets do NOT own native
+    // manual/gate startup and cannot publish its global stop epoch.
+    // No global intent from HTTP ownership snapshots: targeted tickets cancel
+    // extension initialization and conditional stop finalizes only its UUID.
+    // Manual/gate epoch remains independent even with stale session metadata.
+    if req.action == "start"
+        && (crate::audio::recording_commands::stop_pending()
+            || crate::audio::recording_commands::is_stopping())
+    {
+        return (409, err_json("recording is stopping"));
+    }
+    let _trigger_guard = TRIGGER_LOCK.lock().await;
+    if req.action == "start"
+        && (start_epoch != crate::audio::recording_commands::stop_epoch()
+            || crate::audio::recording_commands::stop_pending())
+    {
+        return (409, err_json("start invalidated by stop"));
+    }
+    if request_ticket.as_ref().map_or(false, |t| t.cancelled()) { return (409, err_json("extension start cancelled")); }
     match req.action.as_str() {
+        "recover_failed" => {
+            let generation = match req.native_generation { Some(g) => g, None => return (400, err_json("explicit failed native_generation required")) };
+            let authorized = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(false, |s| s.trigger == "extension" && s.native_generation == generation && s.request_id == request_id && request_id.is_some());
+            if !authorized { return (409, err_json("recovery belongs to another owner")); }
+            match crate::audio::recording_commands::recover_failed_recording(app.clone(), generation).await {
+                Ok(()) => {
+                    let mut owner = STATE.session.lock().unwrap_or_else(|e| e.into_inner());
+                    if owner.as_ref().map_or(false, |s| s.native_generation == generation) { owner.take(); }
+                    STATE.recording_active.store(false, Ordering::SeqCst);
+                    (200, serde_json::json!({"ok": true, "recording": false, "recovered_files": true, "saved_successfully": false}))
+                }
+                Err(e) => (503, err_json(e)),
+            }
+        }
         "start" => {
             super::debug::debug_log(
                 &app,
@@ -152,42 +214,72 @@ async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (
                 "info",
                 format!("POST /trigger start: platform={}, name={:?}", req.platform, req.meeting_name),
             );
+            if crate::audio::recording_commands::is_stopping() {
+                return (409, err_json("recording is stopping"));
+            }
             let already = crate::audio::recording_commands::is_recording().await;
             if already {
+                let failed = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                    .filter(|s| s.trigger == "extension" && s.cleanup_error.is_some()).cloned();
+                if let Some(session) = failed {
+                    let result = super::cleanup_superseded(&app, session).await;
+                    return (503, err_json(format!("recording cleanup required; retry stop: {:?}", result)));
+                }
+                let owned = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                    .map_or(false, |s| s.trigger == "extension" && s.request_id == request_id && s.native_generation == crate::audio::recording_commands::recording_generation());
+                if !owned { return (409, err_json("recording belongs to another owner")); }
                 info!("auto-record: start requested but recording already active (idempotent ok)");
                 super::debug::debug_log(&app, "trigger", "info", "start requested but recording already active (idempotent ok)".to_string());
                 emit_event(&app, "already-recording", serde_json::json!({"platform": req.platform}));
-                return (200, ok_json(Some(true)));
+                let id = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|s| s.request_id.clone());
+                return (200, serde_json::json!({"ok": true, "recording": true, "request_id": id}));
             }
 
             let meeting_name = req
                 .meeting_name
                 .clone()
                 .unwrap_or_else(|| "Auto-recorded meeting".to_string());
-            {
-                let mut session = STATE.session.lock().unwrap_or_else(|e| e.into_inner());
-                *session = Some(SessionMeta {
+            let mut new_session = SessionMeta {
                     meeting_name: meeting_name.clone(),
                     platform: req.platform.clone(),
                     trigger: "extension".to_string(),
+                    native_generation: 0,
+                    cleanup_error: None,
+                    request_id: request_id.clone(),
                     started_at_ms: now_ms(),
                     last_heartbeat_ms: now_ms(),
-                });
-            }
+                };
 
             info!(
                 "auto-record: starting recording for '{}' on {}",
                 meeting_name, req.platform
             );
-            match crate::audio::recording_commands::start_recording_with_devices_and_meeting(
+            let native_request_id = request_id.clone().unwrap_or_default();
+            let recovery_receipt = std::sync::Arc::new(std::sync::Mutex::new(None));
+            match crate::audio::recording_commands::start_gate_recording(
                 app.clone(),
-                None,
-                None,
-                Some(meeting_name.clone()),
+                meeting_name.clone(),
+                start_epoch,
+                move || !EXTENSION_REQUESTS.is_cancelled(&native_request_id),
+                recovery_receipt.clone(),
             )
             .await
             {
-                Ok(()) => {
+                Ok(generation) => {
+                    if generation != crate::audio::recording_commands::recording_generation()
+                        || !crate::audio::recording_commands::is_recording().await
+                        || start_epoch != crate::audio::recording_commands::stop_epoch()
+                        || crate::audio::recording_commands::stop_pending()
+                        || request_ticket.as_ref().map_or(false, |t| t.cancelled())
+                    {
+                        new_session.native_generation = generation;
+                        if let Err(e) = super::cleanup_superseded(&app, new_session).await {
+                            return (503, serde_json::json!({"ok": false, "error": format!("superseded start cleanup failed; retry stop: {}", e), "retry_stop": true, "request_id": request_id}));
+                        }
+                        return (409, err_json("start superseded by stop"));
+                    }
+                    new_session.native_generation = generation;
+                    *STATE.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_session);
                     STATE.recording_active.store(true, Ordering::SeqCst);
                     super::debug::debug_log(&app, "trigger", "info", format!("recording started: '{}' ({})", meeting_name, req.platform));
                     super::notify::notify(
@@ -200,9 +292,15 @@ async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (
                         "auto-record-started",
                         serde_json::json!({"meeting_name": meeting_name, "platform": req.platform}),
                     );
-                    (200, ok_json(Some(true)))
+                    (200, serde_json::json!({"ok": true, "recording": true, "request_id": request_id}))
                 }
                 Err(e) => {
+                    if let Some(generation) = *recovery_receipt.lock().unwrap() {
+                        new_session.native_generation = generation;
+                        new_session.cleanup_error = Some(e.clone());
+                        *STATE.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_session);
+                        return (503, serde_json::json!({"ok": false, "recording": false, "error": e, "retry_stop": true, "request_id": request_id, "native_generation": generation}));
+                    }
                     error!("auto-record: start failed: {}", e);
                     super::debug::debug_log(&app, "trigger", "error", format!("start failed: {}", e));
                     super::notify::notify(
@@ -210,41 +308,46 @@ async fn handle_trigger<R: Runtime>(app: AppHandle<R>, req: TriggerRequest) -> (
                         "Auto-record failed to start",
                         &format!("{} — {}", meeting_name, truncate_err(&e)),
                     );
-                    if let Some(s) = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                        emit_event(
-                            &app,
-                            "auto-record-error",
-                            serde_json::json!({"meeting_name": s.meeting_name, "error": e}),
-                        );
-                    }
+                    emit_event(&app, "auto-record-error",
+                        serde_json::json!({"meeting_name": meeting_name, "error": e}));
                     (503, err_json(format!("recording failed to start: {}", e)))
                 }
             }
         }
         "stop" => {
+            if extension_generation.is_none() && request_id.is_none() { return (200, ok_json(Some(false))); } // never publish stop intent for another owner
             super::debug::debug_log(&app, "trigger", "info", "POST /trigger stop".to_string());
-            let was_active = crate::audio::recording_commands::is_recording().await;
             let save_path = crate::audio::recording_commands::get_meeting_folder_path()
                 .await
                 .unwrap_or(None)
                 .unwrap_or_default();
             let args = crate::audio::recording_commands::RecordingArgs { save_path };
-            match crate::audio::recording_commands::stop_recording(app.clone(), args).await {
-                Ok(()) => {
-                    let meta = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let generation = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                .filter(|s| s.trigger == "extension" && s.request_id == request_id && request_id.is_some()).map(|s| s.native_generation).unwrap_or(0);
+            match crate::audio::recording_commands::stop_recording_if_generation(app.clone(), args, generation, move || {
+                STATE.session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                    .map_or(false, |s| s.trigger == "extension" && s.native_generation == generation)
+            }).await {
+                Ok(did_stop) => {
+                    let mut owner = STATE.session.lock().unwrap_or_else(|e| e.into_inner());
+                    let meta = if owner.as_ref().map_or(false, |s| s.trigger == "extension" && s.native_generation == generation) {
+                        owner.take()
+                    } else { None };
+                    if meta.is_some() { STATE.recording_active.store(false, Ordering::SeqCst); }
+                    drop(owner);
                     let stopped_name = meta
                         .as_ref()
                         .map(|m| m.meeting_name.clone())
                         .unwrap_or_default();
-                    STATE.recording_active.store(false, Ordering::SeqCst);
-                    if was_active {
+                    if did_stop {
                         info!("auto-record: stopped recording via extension trigger");
-                        super::debug::debug_log(&app, "trigger", "info", "recording stopped via extension trigger".to_string());
-                        super::notify::notify(
+                        super::debug::debug_log(
                             &app,
-                            "Recording stopped & saved",
-                            &stopped_name,
+                            "trigger",
+                            "info",
+                            "recording stopped via extension trigger".to_string(),
                         );
+                        super::notify::notify(&app, "Recording stopped & saved", &stopped_name);
                         emit_event(
                             &app,
                             "auto-record-stopped",
@@ -313,7 +416,8 @@ async fn handle_connection<R: Runtime>(app: AppHandle<R>, mut stream: TcpStream)
         return;
     }
 
-    match (parsed.method.as_str(), parsed.path.as_str()) {
+    let route_path = parsed.path.split('?').next().unwrap_or(&parsed.path);
+    match (parsed.method.as_str(), route_path) {
         ("POST", "/trigger") => {
             let req: Result<TriggerRequest, String> = serde_json::from_slice(&parsed.body)
                 .map_err(|e| format!("invalid body: {}", e));
@@ -330,16 +434,39 @@ async fn handle_connection<R: Runtime>(app: AppHandle<R>, mut stream: TcpStream)
             // POST-only route 404'd every extension heartbeat — the extension
             // deadman never armed (PUN-801 log-6: 'alarm heartbeat failed: 404').
             let ts = now_ms();
-            STATE.heartbeat.store(ts, Ordering::SeqCst);
+            let request_id = parsed.path.split_once('?').and_then(|(_, query)| query.split('&')
+                .find_map(|part| part.strip_prefix("request_id=")));
             if let Some(session) = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-                session.last_heartbeat_ms = ts;
+                if session.trigger == "extension" && session.cleanup_error.is_none() && session.request_id.as_deref() == request_id && request_id.is_some() {
+                    STATE.heartbeat.store(ts, Ordering::SeqCst);
+                    session.last_heartbeat_ms = ts;
+                }
             }
             respond(&mut stream, 200, &ok_json(None)).await;
         }
         ("GET", "/ping") => {
+            if parsed.path.split_once('?').map_or(false, |(_, q)| q.split('&').any(|v| v == "capability=1")) {
+                respond(&mut stream, 200, &serde_json::json!({"ok":true,"ownership_protocol":2})).await;
+                return;
+            }
+            // Trigger publication and native transitions share this lock order.
+            // Never return a settled ownership loss from a half-published start.
+            let trigger_guard = TRIGGER_LOCK.lock().await;
+            let engine_guard = crate::audio::common::acquire_engine_lifecycle_lock().await;
             let rec = crate::audio::recording_commands::is_recording().await;
-            super::debug::debug_log(&app, "server", "info", format!("GET /ping -> recording={}", rec));
-            respond(&mut stream, 200, &ok_json(Some(rec))).await;
+            let generation = crate::audio::recording_commands::recording_generation();
+            let session = STATE.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let mut status = ok_json(Some(rec));
+            status["extension_owned"] = serde_json::json!(rec && session.as_ref()
+                .map_or(false, |s| s.trigger == "extension" && s.cleanup_error.is_none() && s.native_generation == generation));
+            status["ownership_protocol"] = serde_json::json!(2);
+            status["request_id"] = serde_json::json!(session.as_ref().filter(|s| s.native_generation == generation).and_then(|s| s.request_id.clone()));
+            status["native_generation"] = serde_json::json!(session.as_ref().filter(|s|s.native_generation==generation).map(|s|s.native_generation));
+            status["cleanup_error"] = serde_json::json!(session.as_ref().filter(|s|s.native_generation==generation).and_then(|s| s.cleanup_error.clone()));
+            status["stop_requested"] = serde_json::json!(crate::audio::recording_commands::stop_requested());
+            status["stopping"] = serde_json::json!(crate::audio::recording_commands::is_stopping());
+            drop(engine_guard); drop(trigger_guard);
+            respond(&mut stream, 200, &status).await;
         }
         _ => respond(&mut stream, 404, &err_json("not found")).await,
     }

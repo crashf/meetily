@@ -46,6 +46,37 @@ pub struct DeviceInfo {
     pub system_audio: Option<String>,
 }
 
+/// Coalesced, session-owned writer. Event callbacks update memory and enqueue
+/// at most one wakeup; storage I/O never runs on transcription workers.
+struct TranscriptWriter {
+    wake: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
+    io: Arc<Mutex<()>>,
+    task: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+impl Drop for TranscriptWriter {
+    fn drop(&mut self) {
+        self.wake.lock().unwrap().take();
+        // Abnormal drop cannot block the runtime; normal release explicitly joins
+        // this task inside the retained publication job before owner release.
+        if let Some(task) = self.task.lock().unwrap().take() { std::thread::spawn(move || { let _ = task.join(); }); }
+    }
+}
+#[derive(Clone)]
+pub struct TranscriptSink {
+    segments: Arc<Mutex<Vec<TranscriptSegment>>>,
+    writer: Arc<TranscriptWriter>,
+}
+impl TranscriptSink {
+    pub fn add(&self, segment: TranscriptSegment) {
+        {
+            let mut segments = self.segments.lock().unwrap();
+            if let Some(existing) = segments.iter_mut().find(|s| s.sequence_id == segment.sequence_id) { *existing = segment; }
+            else { segments.push(segment); }
+        }
+        if let Some(wake)=self.writer.wake.lock().unwrap().as_ref() { let _ = wake.try_send(()); } // bounded coalescing, never block a worker
+    }
+}
+
 /// New recording saver using incremental saving strategy
 pub struct RecordingSaver {
     incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
@@ -53,7 +84,16 @@ pub struct RecordingSaver {
     meeting_name: Option<String>,
     metadata: Option<MeetingMetadata>,
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
-    is_saving: Arc<Mutex<bool>>,
+    transcript_writer: Mutex<Option<Arc<TranscriptWriter>>>,
+    accumulation_error: Option<String>,
+    accumulation_task_failed: bool,
+    audio_required: bool,
+    finalized_audio: Option<PathBuf>,
+    finalization_task: Option<tokio::task::JoinHandle<Result<PathBuf,String>>>,
+    recovery_publication: Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>,
+    audio_recovery_task: Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>,
+    accumulation_stop: Option<tokio::sync::oneshot::Sender<()>>,
+    accumulation_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
 }
 
 impl RecordingSaver {
@@ -64,8 +104,45 @@ impl RecordingSaver {
             meeting_name: None,
             metadata: None,
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
-            is_saving: Arc::new(Mutex::new(false)),
+            transcript_writer: Mutex::new(None),
+            accumulation_error: None,
+            accumulation_task_failed: false,
+            audio_required: false,
+            finalized_audio: None,
+            finalization_task: None,
+            recovery_publication: Arc::new(Mutex::new(None)),
+            audio_recovery_task: Arc::new(Mutex::new(None)),
+            accumulation_stop: None,
+            accumulation_task: None,
         }
+    }
+
+    pub fn transcript_sink(&self) -> TranscriptSink {
+        let mut slot = self.transcript_writer.lock().unwrap();
+        let writer = slot.get_or_insert_with(|| {
+            let (wake, receiver) = std::sync::mpsc::sync_channel(1);
+            let io = Arc::new(Mutex::new(()));
+            let write_lock = io.clone();
+            let segments = self.transcript_segments.clone();
+            let folder = self.meeting_folder.clone();
+            let task = std::thread::spawn(move || {
+                while receiver.recv().is_ok() {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    while receiver.try_recv().is_ok() {}
+                    let _write = write_lock.lock().unwrap();
+                    let snapshot = segments.lock().unwrap().clone();
+                    if let Some(folder) = &folder {
+                        let result = serde_json::to_vec(&serde_json::json!({"version":"1.0","segments":snapshot,"last_updated":chrono::Utc::now().to_rfc3339(),"total_segments":snapshot.len()})).map_err(|e|e.to_string()).and_then(|bytes| {
+                            let temp=folder.join("transcripts.sink.tmp");
+                            std::fs::write(&temp,bytes).map_err(|e|e.to_string()).and_then(|_|super::incremental_saver::publish_durable(&temp,&folder.join("transcripts.json")).map_err(|e|e.to_string()))
+                        });
+                        if let Err(e)=result { error!("Transcript writer failed; snapshot retained for final retry: {}",e); }
+                    }
+                }
+            });
+            Arc::new(TranscriptWriter { wake:Mutex::new(Some(wake)), io, task: Mutex::new(Some(task)) })
+        }).clone();
+        TranscriptSink { segments: self.transcript_segments.clone(), writer }
     }
 
     /// Set the meeting name for this recording session
@@ -140,6 +217,7 @@ impl RecordingSaver {
         auto_save: bool,
         mut receiver: mpsc::UnboundedReceiver<AudioChunk>,
     ) {
+        self.audio_required = auto_save;
         if auto_save {
             info!("Initializing incremental audio saver for recording (auto-save ENABLED)");
         } else {
@@ -171,32 +249,36 @@ impl RecordingSaver {
         }
 
         // Start accumulation task
-        let is_saving_clone = self.is_saving.clone();
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
+        self.accumulation_stop = Some(stop_tx);
         let incremental_saver_arc = self.incremental_saver.clone();
         let save_audio = auto_save;
 
-        tokio::spawn(async move {
+        self.accumulation_task = Some(tokio::spawn(async move {
             info!("Recording saver accumulation task started (save_audio: {})", save_audio);
 
-            while let Some(chunk) = receiver.recv().await {
-                // Check if we should continue
-                let should_continue = if let Ok(is_saving) = is_saving_clone.lock() {
-                    *is_saving
-                } else {
-                    false
+            let mut closing = false;
+            let mut accumulation_error = None;
+            loop {
+                let chunk = tokio::select! {
+                    biased;
+                    _ = &mut stop_rx, if !closing => {
+                        receiver.close(); // reject new producers, drain every already accepted chunk
+                        closing = true;
+                        continue;
+                    }
+                    chunk = receiver.recv() => match chunk { Some(chunk) => chunk, None => break },
                 };
-
-                if !should_continue {
-                    break;
-                }
 
                 // Only process audio chunks if auto_save is enabled
                 if save_audio {
                     // Add chunk to incremental saver
                     if let Some(saver_arc) = &incremental_saver_arc {
-                        let mut saver_guard = saver_arc.lock().await;
-                        if let Err(e) = saver_guard.add_chunk(chunk) {
+                        let saver=saver_arc.clone();
+                        let written=tokio::task::spawn_blocking(move || saver.blocking_lock().add_chunk(chunk).map_err(|e|e.to_string())).await;
+                        if let Err(e) = written.map_err(|e|e.to_string()).and_then(|r|r) {
                             error!("Failed to add chunk to incremental saver: {}", e);
+                            accumulation_error = Some(e.to_string());
                         }
                     } else {
                         error!("Incremental saver not available while accumulating");
@@ -208,12 +290,8 @@ impl RecordingSaver {
             }
 
             info!("Recording saver accumulation task ended");
-        });
-
-        // Set saving flag
-        if let Ok(mut is_saving) = self.is_saving.lock() {
-            *is_saving = true;
-        }
+            match accumulation_error { Some(e) => Err(e), None => Ok(()) }
+        }));
     }
 
     /// Initialize meeting folder structure and metadata
@@ -256,10 +334,9 @@ impl RecordingSaver {
         };
 
         // Write initial metadata.json
+        self.meeting_folder = Some(meeting_folder.clone());
+        self.metadata = Some(metadata.clone());
         self.write_metadata(&meeting_folder, &metadata)?;
-
-        self.meeting_folder = Some(meeting_folder);
-        self.metadata = Some(metadata);
 
         Ok(())
     }
@@ -271,13 +348,17 @@ impl RecordingSaver {
 
         let json_string = serde_json::to_string_pretty(metadata)?;
         std::fs::write(&temp_path, json_string)?;
-        std::fs::rename(&temp_path, &metadata_path)?;  // Atomic
+        super::incremental_saver::publish_durable(&temp_path, &metadata_path)?;  // Atomic
 
         Ok(())
     }
 
     /// Write transcripts.json to disk (atomic write with temp file and validation)
     fn write_transcripts_json(&self, folder: &PathBuf) -> Result<()> {
+        // Final durable publication is ordered with every background write. Once
+        // transcription is drained no subsequent writer can publish older data.
+        let writer = self.transcript_writer.lock().unwrap().clone();
+        let _write = writer.as_ref().map(|w| w.io.lock().unwrap());
         // Clone segments to avoid holding lock during I/O
         let segments_clone = if let Ok(segments) = self.transcript_segments.lock() {
             segments.clone()
@@ -320,7 +401,7 @@ impl RecordingSaver {
         }
 
         // Atomic rename
-        std::fs::rename(&temp_path, &transcript_path)
+        super::incremental_saver::publish_durable(&temp_path, &transcript_path)
             .map_err(|e| {
                 error!("Failed to rename transcript file from {} to {}: {}",
                        temp_path.display(), transcript_path.display(), e);
@@ -344,6 +425,113 @@ impl RecordingSaver {
         }
     }
 
+    async fn drain_accumulation(&mut self) -> Result<(), String> {
+        if let Some(stop) = self.accumulation_stop.take() { let _ = stop.send(()); }
+        if let Some(task) = self.accumulation_task.as_mut() {
+            let joined = task.await;
+            self.accumulation_task_failed = joined.is_err();
+            let result = joined.map_err(|e| format!("Audio saver task failed: {}", e)).and_then(|r| r);
+            self.accumulation_task.take(); // only remove after completed await; cancellation keeps ownership
+            if let Err(e) = result { self.accumulation_error = Some(e); }
+        }
+        match &self.accumulation_error { Some(e) => Err(e.clone()), None => Ok(()) }
+    }
+
+    /// Independent failure recovery: exactly-once receiver drain, retryable tail persistence.
+    pub async fn preserve_recoverable_audio(&mut self) -> Result<(), String> {
+        if let Some(task)=self.finalization_task.as_mut(){
+            let result=task.await;self.finalization_task.take();
+            self.finalized_audio=Some(result.map_err(|e|e.to_string())??);
+        }
+        let drained = self.drain_accumulation().await;
+        {
+            let mut slot = self.audio_recovery_task.lock().unwrap();
+            if slot.is_none() {
+                let finalized = self.finalized_audio.clone();
+                let saver = self.incremental_saver.clone();
+                let required = self.audio_required;
+                *slot = Some(tokio::task::spawn_blocking(move || {
+                    if let Some(path)=finalized { std::fs::OpenOptions::new().write(true).open(path).and_then(|f|f.sync_all()).map_err(|e|e.to_string())?; }
+                    if let Some(saver)=saver { saver.blocking_lock().persist_tail().map_err(|e|e.to_string()) }
+                    else if required { Err("required audio saver unavailable; accepted audio may be lost".into()) } else { Ok(()) }
+                }));
+            }
+        }
+        let persisted = Self::await_recovery_publication(self.audio_recovery_task.clone()).await;
+        if persisted.is_ok() && !self.accumulation_task_failed {
+            // add_chunk appends before its retryable checkpoint write. A durable
+            // tail accounts for all accepted data; a lost task never does.
+            self.accumulation_error = None;
+            return Ok(());
+        }
+        drained.and(persisted)
+    }
+
+    pub fn recovery_publication_task(&self) -> Result<Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>, String> {
+        let folder = self.meeting_folder.clone().ok_or_else(|| "recovery transcript folder unavailable".to_string())?;
+        let metadata = self.metadata.clone();
+        let segments = self.transcript_segments.clone();
+        let writer = self.transcript_writer.lock().unwrap().clone();
+        let mut slot = self.recovery_publication.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(tokio::task::spawn_blocking(move || {
+                if let Some(writer)=&writer {
+                    writer.wake.lock().unwrap().take(); // close enqueue channel after transcript drain
+                    let task=writer.task.lock().unwrap().take();
+                    if let Some(task)=task { task.join().map_err(|_| "transcript writer shutdown failed".to_string())?; }
+                }
+                let _write = writer.as_ref().map(|w| w.io.lock().unwrap());
+                let snapshot = segments.lock().unwrap().clone();
+                let bytes = serde_json::to_vec(&serde_json::json!({"version":"1.0","segments":snapshot,"last_updated":chrono::Utc::now().to_rfc3339(),"total_segments":snapshot.len()})).map_err(|e|e.to_string())?;
+                let temp=folder.join("transcripts.final.tmp");
+                std::fs::write(&temp,bytes).map_err(|e|e.to_string())?;
+                super::incremental_saver::publish_durable(&temp,&folder.join("transcripts.json")).map_err(|e|e.to_string())?;
+                if let Some(metadata)=metadata {
+                    let temp=folder.join("metadata.final.tmp");
+                    std::fs::write(&temp,serde_json::to_vec_pretty(&metadata).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+                    super::incremental_saver::publish_durable(&temp,&folder.join("metadata.json")).map_err(|e|e.to_string())?;
+                }
+                Ok(())
+            }));
+        }
+        drop(slot);
+        Ok(self.recovery_publication.clone())
+    }
+
+    pub async fn await_recovery_publication(task: Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>) -> Result<(), String> {
+        // Drop restores the handle on outer timeout/cancellation as well as our
+        // own timeout; no detached writer can be raced by a retry.
+        struct PendingPublication {
+            owner: Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>,
+            handle: Option<tokio::task::JoinHandle<Result<(), String>>>,
+        }
+        impl Drop for PendingPublication {
+            fn drop(&mut self) { if let Some(handle)=self.handle.take() { *self.owner.lock().unwrap()=Some(handle); } }
+        }
+        let handle=task.lock().unwrap().take().ok_or_else(|| "recovery publication already being awaited".to_string())?;
+        let mut pending=PendingPublication{owner:task,handle:Some(handle)};
+        match tokio::time::timeout(std::time::Duration::from_secs(30), pending.handle.as_mut().unwrap()).await {
+            Err(_) => Err("durable transcript publication pending; retry recovery".into()),
+            Ok(result) => { pending.handle.take(); result.map_err(|e|format!("durable publication task failed: {}",e))? },
+        }
+    }
+
+    pub fn mark_failed_metadata(&mut self) {
+        if let Some(metadata)=self.metadata.as_mut(){metadata.status="recovery_required".into();metadata.completed_at=None;}
+    }
+
+    pub async fn persist_failed_recovery_transcripts(&self) -> Result<(), String> {
+        // First settle any old completed-candidate publication, then always
+        // publish the retained non-completed metadata in a fresh ordered job.
+        let pending = self.recovery_publication.lock().unwrap().is_some();
+        if pending { Self::await_recovery_publication(self.recovery_publication.clone()).await?; }
+        self.persist_recovery_transcripts().await
+    }
+
+    pub async fn persist_recovery_transcripts(&self) -> Result<(), String> {
+        Self::await_recovery_publication(self.recovery_publication_task()?).await
+    }
+
     /// Stop and save using incremental saving approach
     ///
     /// # Arguments
@@ -356,17 +544,18 @@ impl RecordingSaver {
     ) -> Result<Option<String>, String> {
         info!("Stopping recording saver");
 
-        // Stop accumulation
-        if let Ok(mut is_saving) = self.is_saving.lock() {
-            *is_saving = false;
+        if let Err(drain_error) = self.drain_accumulation().await {
+            let recovery = self.preserve_recoverable_audio().await;
+            if let Err(e) = recovery { return Err(format!("{}; tail recovery: {}", drain_error, e)); }
+            self.drain_accumulation().await?;
         }
 
-        // Give time for final chunks
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
         // Check if incremental saver exists (indicates auto_save was enabled)
+        if self.meeting_folder.is_none() || self.metadata.is_none() { return Err("recording initialization incomplete; recovery required".into()); }
+        if self.audio_required && self.incremental_saver.is_none() { return Err("required audio saver initialization failed".into()); }
         let should_save_audio = self.incremental_saver.is_some();
 
+        self.persist_recovery_transcripts().await?;
         if !should_save_audio {
             info!("⚠️  No audio saver initialized (auto-save was disabled) - skipping audio finalization");
             info!("✅ Transcripts and metadata already saved incrementally");
@@ -374,41 +563,28 @@ impl RecordingSaver {
         }
 
         // Finalize incremental saver (merge checkpoints into final audio.mp4)
-        let final_audio_path = if let Some(saver_arc) = &self.incremental_saver {
-            let mut saver = saver_arc.lock().await;
-            match saver.finalize().await {
-                Ok(path) => {
-                    info!("✅ Successfully finalized audio: {}", path.display());
-                    path
-                }
-                Err(e) => {
-                    error!("❌ Failed to finalize incremental saver: {}", e);
-                    return Err(format!("Failed to finalize audio: {}", e));
-                }
+        let final_audio_path = if let Some(path) = &self.finalized_audio {
+            path.clone()
+        } else if let Some(saver_arc) = &self.incremental_saver {
+            if self.finalization_task.is_none() {
+                let saver=saver_arc.clone();
+                self.finalization_task=Some(tokio::task::spawn_blocking(move || {
+                    let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e|e.to_string())?;
+                    runtime.block_on(async {saver.lock().await.finalize().await.map_err(|e|e.to_string())})
+                }));
             }
+            let joined=self.finalization_task.as_mut().unwrap().await;
+            self.finalization_task.take();
+            let path=joined.map_err(|e|format!("audio finalization task failed: {}",e))??;
+            self.finalized_audio = Some(path.clone());
+            path
         } else {
             error!("No incremental saver initialized - cannot save recording");
             return Err("No incremental saver initialized".to_string());
         };
 
-        // Save final transcripts.json with validation
-        if let Some(folder) = &self.meeting_folder {
-            if let Err(e) = self.write_transcripts_json(folder) {
-                error!("❌ Failed to write final transcripts: {}", e);
-                return Err(format!("Failed to save transcripts: {}", e));
-            }
-
-            // Verify transcripts were written correctly
-            let transcript_path = folder.join("transcripts.json");
-            if !transcript_path.exists() {
-                error!("❌ Transcript file was not created at: {}", transcript_path.display());
-                return Err("Transcript file verification failed".to_string());
-            }
-            info!("✅ Transcripts saved and verified at: {}", transcript_path.display());
-        }
-
         // Update metadata to completed status with actual recording duration
-        if let (Some(folder), Some(mut metadata)) = (&self.meeting_folder, self.metadata.clone()) {
+        if let Some(mut metadata) = self.metadata.clone() {
             metadata.status = "completed".to_string();
             metadata.completed_at = Some(chrono::Utc::now().to_rfc3339());
 
@@ -422,10 +598,9 @@ impl RecordingSaver {
                 }
             });
 
-            if let Err(e) = self.write_metadata(folder, &metadata) {
-                error!("❌ Failed to update metadata to completed: {}", e);
-                return Err(format!("Failed to update metadata: {}", e));
-            }
+            let previous=self.metadata.clone();
+            self.metadata=Some(metadata.clone());
+            if let Err(e)=self.persist_recovery_transcripts().await { self.metadata=previous; return Err(e); }
 
             info!("✅ Metadata updated with duration: {:?}s", metadata.duration_seconds);
         }
@@ -444,10 +619,8 @@ impl RecordingSaver {
             warn!("Failed to emit recording-saved event: {}", e);
         }
 
-        // Clean up transcript segments
-        if let Ok(mut segments) = self.transcript_segments.lock() {
-            segments.clear();
-        }
+        // Keep the final session snapshot until its background writer is dropped
+        // and joined. A queued wake must never publish an empty final transcript.
 
         Ok(Some(final_audio_path.to_string_lossy().to_string()))
     }

@@ -180,6 +180,7 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; 4. Custom page to ask user if he wants to reinstall/uninstall
 ;    only if a previous installation was detected
 Var ReinstallPageCheck
+Var ValidatedPredecessor
 Page custom PageReinstall PageLeaveReinstall
 Function PageReinstall
   ; Uninstall previous WiX installation if exists.
@@ -212,7 +213,9 @@ Function PageReinstall
     ReadRegStr $R0 HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1" "UninstallString"
     ${StrCase} $R1 $R0 "L"
     ${StrLoc} $R0 $R1 "msiexec" ">"
-    StrCmp $R0 0 0 wix_loop_done
+    ; PUN-827 BEGIN skip non-MSI matching entry
+    StrCmp $R0 0 0 wix_loop
+    ; PUN-827 END skip non-MSI matching entry
     StrCpy $WixMode 1
     StrCpy $R6 "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1"
     Goto compare_version
@@ -349,6 +352,36 @@ Function PageLeaveReinstall
   ${EndIf}
 
   reinst_uninstall:
+    ; PUN-827 BEGIN predecessor preflight
+    ${If} $WixMode = 1
+      ReadRegStr $4 HKLM "$R6" "InstallLocation"
+      ${If} $4 == ""
+        ; Validated interactive fallback: selected existing tree must contain
+        ; the legacy main executable. Never guess an MSI directory silently.
+        StrCpy $4 $INSTDIR
+        IfFileExists "$4\${MAINBINARYNAME}.exe" predecessor_selected 0
+        IfSilent 0 +2
+          Abort
+        nsDialogs::SelectFolderDialog "Select existing predecessor installation" "$INSTDIR"
+        Pop $4
+        StrCmp $4 "error" 0 +2
+          Abort
+        predecessor_selected:
+        IfFileExists "$4\${MAINBINARYNAME}.exe" +3 0
+          MessageBox MB_ICONSTOP "Select the existing predecessor directory containing ${MAINBINARYNAME}.exe, then retry migration."
+          Abort
+      ${EndIf}
+    ${Else}
+      ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+    ${EndIf}
+    StrCmp $4 "" 0 +2
+      Abort
+    IfFileExists "$4\${MAINBINARYNAME}.exe" +2 0
+      Abort
+    StrCpy $ValidatedPredecessor $4
+    Push $4
+    Call ValidateTree
+    ; PUN-827 END predecessor preflight
     HideWindow
     ClearErrors
 
@@ -369,7 +402,7 @@ Function PageLeaveReinstall
     ${IfThen} ${Errors} ${|} StrCpy $0 2 ${|} ; ExecWait failed, set fake exit code
 
     ${If} $0 <> 0
-    ${OrIf} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+    ${OrIf} ${FileExists} "$ValidatedPredecessor\${MAINBINARYNAME}.exe"
       ; User cancelled wix uninstaller? return to select un/reinstall page
       ${If} $WixMode = 1
       ${AndIf} $0 = 1602
@@ -528,6 +561,87 @@ Function .onInit
 FunctionEnd
 
 
+ ; PUN-827 BEGIN reparse safety
+; Validate each existing path component and the entire affected directory tree.
+; GetFileAttributes returns INVALID_FILE_ATTRIBUTES for absent paths; creation
+; remains allowed only below already validated non-reparse ancestors.
+!macro PunditPathSafety Prefix
+Function ${Prefix}ValidatePath
+  Exch $R0
+  Push $R1
+  Push $R2
+  StrCpy $R1 $R0
+  path_loop:
+    System::Call 'kernel32::GetFileAttributesW(w r11) i.r12'
+    IntCmp $R2 -1 path_missing path_attributes path_attributes
+    path_missing:
+      System::Call 'kernel32::GetLastError() i.r12'
+      IntCmp $R2 2 path_parent
+      IntCmp $R2 3 path_parent
+      MessageBox MB_ICONSTOP "Cannot validate install path: $R1"
+      Abort
+    path_attributes:
+    IntOp $R2 $R2 & 0x400
+    IntCmp $R2 0 path_parent
+      MessageBox MB_ICONSTOP "Unsafe reparse-point path: $R1"
+      Abort
+    path_parent:
+      ${GetParent} "$R1" $R2
+      StrCmp $R2 $R1 path_done
+      StrCmp $R2 "" path_done
+      StrCpy $R1 $R2
+      Goto path_loop
+  path_done:
+  Pop $R2
+  Pop $R1
+  Pop $R0
+FunctionEnd
+Function ${Prefix}ValidateTree
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R0
+  Call ${Prefix}ValidatePath
+  ClearErrors
+  FindFirst $R1 $R2 "$R0\*"
+  IfErrors tree_error
+  tree_loop:
+    StrCmp $R2 "" tree_done
+    StrCmp $R2 "." tree_next
+    StrCmp $R2 ".." tree_next
+    Push "$R0\$R2"
+    Call ${Prefix}ValidatePath
+    System::Call 'kernel32::GetFileAttributesW(w "$R0\$R2") i.r13'
+    IntCmp $R3 -1 tree_error
+    IntOp $R3 $R3 & 0x10
+    IntCmp $R3 0 tree_next
+    Push "$R0\$R2"
+    Call ${Prefix}ValidateTree
+    tree_next:
+      ClearErrors
+      FindNext $R1 $R2
+      IfErrors tree_error
+      Goto tree_loop
+  tree_error:
+  System::Call 'kernel32::GetLastError() i.r13'
+  IntCmp $R3 18 tree_done
+  IntCmp $R3 2 tree_done
+  IntCmp $R3 3 tree_done
+  MessageBox MB_ICONSTOP "Cannot enumerate install tree: $R0"
+  Abort
+  tree_done:
+  FindClose $R1
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+FunctionEnd
+!macroend
+!insertmacro PunditPathSafety ""
+!insertmacro PunditPathSafety "un."
+; PUN-827 END reparse safety
+
 Section EarlyChecks
   ; Abort silent installer if downgrades is disabled
   !if "${ALLOWDOWNGRADES}" == "false"
@@ -640,6 +754,10 @@ Section WebView2
 SectionEnd
 
 Section Install
+  ; PUN-827 BEGIN install reparse validation
+  Push $INSTDIR
+  Call ValidateTree
+  ; PUN-827 END install reparse validation
   SetOutPath $INSTDIR
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
@@ -778,6 +896,33 @@ Function un.onInit
 FunctionEnd
 
 Section Uninstall
+  ; PUN-827 BEGIN uninstall reparse validation
+  Push $INSTDIR
+  Call un.ValidateTree
+  ; PUN-827 END uninstall reparse validation
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    SetShellVarContext current
+    ; PUN-827 BEGIN appdata reparse validation
+    Push "$APPDATA\${BUNDLEID}"
+    Call un.ValidateTree
+    Push "$LOCALAPPDATA\${BUNDLEID}"
+    Call un.ValidateTree
+    ; PUN-827 END appdata reparse validation
+    ; PUN-827 BEGIN shell context restore
+    !if "${INSTALLMODE}" == "perMachine"
+      SetShellVarContext all
+    !else if "${INSTALLMODE}" == "both"
+      ${If} $MultiUser.InstallMode == "AllUsers"
+        SetShellVarContext all
+      ${Else}
+        SetShellVarContext current
+      ${EndIf}
+    !else
+      SetShellVarContext current
+    !endif
+    ; PUN-827 END shell context restore
+  ${EndIf}
 
   !ifmacrodef NSIS_HOOK_PREUNINSTALL
     !insertmacro NSIS_HOOK_PREUNINSTALL

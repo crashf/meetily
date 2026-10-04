@@ -38,3 +38,14 @@ test('invalid provenance fails before output creation', t => {
   assert.throws(() => stage(bundle, output, { ...meta, sha: 'branch-name' }), /full commit SHA/);
   assert.equal(fs.existsSync(output), false);
 });
+test('signature symlink cannot include an external file',t=>{
+ const {bundle,output}=fixture(t);const installer=path.join(bundle,'nsis','meetily.exe');
+ fs.writeFileSync(installer,'setup');const outside=path.join(bundle,'outside');fs.writeFileSync(outside,'private');
+ fs.symlinkSync(outside,installer+'.sig');assert.throws(()=>stage(bundle,output,meta),/regular file/);
+});
+test('installer directory symlink cannot include external installers',t=>{
+ const {bundle,output}=fixture(t);const dir=path.join(bundle,'nsis');fs.rmdirSync(dir);
+ const outside=path.join(path.dirname(bundle),'outside');fs.mkdirSync(outside);fs.writeFileSync(path.join(outside,'private.exe'),'private');
+ fs.symlinkSync(outside,dir,process.platform==='win32'?'junction':'dir');
+ assert.throws(()=>stage(bundle,output,meta),/real directory/);
+});

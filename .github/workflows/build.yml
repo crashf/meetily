@@ -703,7 +703,9 @@ jobs:
         if: inputs.branded-delivery
         shell: bash
         run: |
-          node --test frontend/src/brand/rebrand.test.mjs frontend/src/brand/generated-html.test.mjs frontend/src-tauri/tests/branding-invariants.test.cjs .github/stage-branded-installers.test.cjs
+          node --test frontend/src/brand/rebrand.test.mjs frontend/src/brand/generated-html.test.mjs frontend/src-tauri/tests/branding-invariants.test.cjs .github/stage-branded-installers.test.cjs extension/tests/lifecycle.test.cjs frontend/tests/native/stop-lifecycle.test.cjs
+          rustc --edition=2021 --test frontend/src-tauri/src/audio/lifecycle_policy.rs -o "$RUNNER_TEMP/lifecycle-policy-tests.exe"
+          "$RUNNER_TEMP/lifecycle-policy-tests.exe"
 
       - name: Install FUSE for AppImage processing
         if: contains(inputs.platform, 'ubuntu')

@@ -15,6 +15,13 @@ pub mod notify;
 pub mod server;
 pub mod watchdog;
 
+pub static GATE_CONFIG_EPOCH: AtomicU64 = AtomicU64::new(0);
+static GATE_SNAPSHOT: Mutex<Option<(AutoRecordConfig, u64)>> = Mutex::new(None);
+pub async fn gate_snapshot<R: Runtime>(app: &AppHandle<R>) -> (AutoRecordConfig, u64) {
+    let loaded = load_config(app).await;
+    let mut snapshot = GATE_SNAPSHOT.lock().unwrap();
+    snapshot.get_or_insert_with(|| (loaded, GATE_CONFIG_EPOCH.load(Ordering::SeqCst))).clone()
+}
 pub const STORE_FILE: &str = "auto_record.json";
 pub const DEFAULT_PORT: u16 = 7788;
 
@@ -98,6 +105,9 @@ pub struct SessionMeta {
     pub meeting_name: String,
     pub platform: String,
     pub trigger: String,
+    pub native_generation: u64,
+    pub cleanup_error: Option<String>,
+    pub request_id: Option<String>,
     pub started_at_ms: u64,
     pub last_heartbeat_ms: u64,
 }
@@ -115,6 +125,38 @@ pub static STATE: Lazy<AutoRecordState> = Lazy::new(|| AutoRecordState {
     heartbeat: AtomicU64::new(0),
     recording_active: AtomicBool::new(false),
 });
+
+/// Caller holds TRIGGER_LOCK. Publish retry ownership before cleanup can fail.
+/// Generation-scoped native stop must never destroy a replacement recording.
+pub async fn cleanup_superseded<R: Runtime>(app: &AppHandle<R>, mut session: SessionMeta) -> Result<(), String> {
+    let generation = session.native_generation;
+    if generation != crate::audio::recording_commands::recording_generation() {
+        let mut owner = STATE.session.lock().unwrap_or_else(|e| e.into_inner());
+        if owner.as_ref().map_or(false, |s| s.native_generation == generation) { owner.take(); }
+        return Ok(());
+    }
+    session.cleanup_error = Some("superseded startup requires cleanup".into());
+    *STATE.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
+    let args = crate::audio::recording_commands::RecordingArgs { save_path: String::new() };
+    let result = crate::audio::recording_commands::stop_recording_if_generation(app.clone(), args, generation, || true).await;
+    let mut owner = STATE.session.lock().unwrap_or_else(|e| e.into_inner());
+    if owner.as_ref().map_or(false, |s| s.native_generation == generation) {
+        match &result {
+            Ok(_) => { owner.take(); STATE.recording_active.store(false, Ordering::SeqCst); }
+            Err(e) => { if let Some(s) = owner.as_mut() { s.cleanup_error = Some(e.clone()); } }
+        }
+    }
+    drop(owner);
+    match result {
+        Ok(true) => { emit_post_processing_complete(app); Ok(()) }
+        Ok(false) => Ok(()),
+        Err(e) => {
+            debug::debug_log(app, "cleanup", "error", format!("superseded generation {} cleanup failed: {}", generation, e));
+            emit_event(app, "auto-record-error", serde_json::json!({"error": e, "native_generation": generation, "retry_stop": true}));
+            Err(e)
+        }
+    }
+}
 
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -160,7 +202,12 @@ pub async fn save_config<R: Runtime>(app: &AppHandle<R>, cfg: &AutoRecordConfig)
         return;
     };
     // NOTE: store.set() returns () in tauri-plugin-store 2.x; store.save() is the fallible flush.
-    store.set("config", serde_json::to_value(cfg).unwrap_or_default());
+    {
+        let mut snapshot = GATE_SNAPSHOT.lock().unwrap();
+        store.set("config", serde_json::to_value(cfg).unwrap_or_default());
+        let epoch = GATE_CONFIG_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+        *snapshot = Some((cfg.clone(), epoch));
+    }
     if let Err(e) = store.save() {
         log::error!("auto-record store flush failed: {}", e);
     }
@@ -190,9 +237,9 @@ mod post_processing_contract_tests {
 
     fn assert_stop_routes_to_post_processing(relative: &str, call: &str) {
         let code = source(relative);
-        let stop = code.find("stop_recording(").expect("stop call exists");
+        let stop = code.find("stop_recording_with_outcome(").or_else(|| code.find("stop_recording_if_generation(")).expect("stop call exists");
         let success = code[stop..]
-            .find("Ok(())")
+            .find("Ok(did_stop)").or_else(|| code[stop..].find("Ok(true)"))
             .map(|i| stop + i)
             .expect("success arm exists");
         let failure = code[success..]

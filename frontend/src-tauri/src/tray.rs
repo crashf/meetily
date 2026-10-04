@@ -76,7 +76,7 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             let save_path = data_dir.join(format!("recording-{}.wav", timestamp));
 
             // Call Rust stop_recording command (like pause/resume pattern)
-            let stop_result = crate::audio::recording_commands::stop_recording(
+            let stop_result = crate::audio::recording_commands::stop_recording_with_outcome(
                 app_clone.clone(),
                 crate::audio::recording_commands::RecordingArgs {
                     save_path: save_path.to_string_lossy().to_string(),
@@ -86,7 +86,8 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
 
             // Handle result
             match stop_result {
-                Ok(_) => {
+                Ok(did_stop) => {
+                    if !did_stop { update_tray_menu_async(&app_clone).await; return; }
                     log::info!("Tray toggle: Recording stopped successfully");
 
                     // Trigger frontend post-processing via event (works from any page)
@@ -172,7 +173,7 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
         let save_path = data_dir.join(format!("recording-{}.wav", timestamp));
 
         // Call Rust stop_recording command (like pause/resume pattern)
-        let stop_result = crate::audio::recording_commands::stop_recording(
+        let stop_result = crate::audio::recording_commands::stop_recording_with_outcome(
             app_clone.clone(),
             crate::audio::recording_commands::RecordingArgs {
                 save_path: save_path.to_string_lossy().to_string(),
@@ -182,7 +183,8 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
 
         // Handle result
         match stop_result {
-            Ok(_) => {
+            Ok(did_stop) => {
+                if !did_stop { update_tray_menu_async(&app_clone).await; return; }
                 log::info!("Tray: Recording stopped successfully");
 
                 // Trigger frontend post-processing via event (works from any page)

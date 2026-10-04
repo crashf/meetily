@@ -1,3 +1,7 @@
+# Integrated regression build exceptions (2026-10-04)
+
+The inventory below records the original isolated rebrand component, not a claim that the current integrated build is presentation-only. Desktop version is now0.4.2 (manifest/workspace lockfile), extension1.4.0. Authorized detector/ownership/explicit-stop/native lifecycle changes are covered by separate deterministic regression tests; lifecycle files are exempted from the original byte-substitution assertion. Legacy identity, DB/preferences/token pairing, auth transport, permissions and updater are retained. URL-only force preference storage remains but does not authorize auto-join. Native ping adds stop_requested/stopping. Runtime Windows acceptance remains open.
+
 # PUN-827 native / extension branding delivery
 
 Base: e86df852510ab879e8507577a2477a06917f7dfa.
@@ -83,7 +87,7 @@ nonpresentation fields, exact extension presentation-only substitutions,
 Rust presentation-only substitutions and key unchanged storage/logger files;
 PNG dimensions and explicit NSIS legacy/display identities are checked.
 node --check extension/background.js, content.js, options.js: all pass.
-git diff --check: pass. Normal /root/src/meetily checkout remains untouched.
+git diff --check: pass. Existing baseline checkout remains untouched.
 Rust compilation/tests/rustfmt were not run: cargo/rustfmt are unavailable
 on this host. Extension Chrome load/runtime and graphics appearance are not
 validated. Logger registration code in lib.rs/main.rs is byte-identical to
@@ -117,8 +121,8 @@ The original branded PRODUCTNAME Run cleanup is unchanged. No current native
 autostart writer was found by independent validation; this is compatibility
 protection, not a claim that deployed installations contain the old value.
 
-After removing only the two delimited cleanup additions and the original
-legacy identity split, the entire template hashes to the independently
+After removing the two delimited cleanup additions, original legacy identity
+split, four reparse-validation blocks, and MSI display-name/non-MSI scan changes, the entire template hashes to the independently
 retrieved exact CLI 2.11.1 upstream SHA256:
 ee84148e405adc4d736a46456dd8345a644751bd1f28a335dd7fd833a32d7c3e.
 Thus all other NSIS text/control flow, including shortcut creation, /NS,

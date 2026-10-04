@@ -1,12 +1,14 @@
 // Pund-IT Meeting Assistant Auto-Record — content script.
 // Detects "in a live meeting" on Meet/Teams/Zoom web and reports JOIN/LEAVE/HEARTBEAT
 // to the service worker, which talks to the local Pund-IT Meeting Assistant trigger server.
-// v1.3 (PUN-801): SENSOR architecture — every frame reports raw signals every 2s;
+// v1.4.0 (PUN-801): SENSOR architecture — every frame reports raw signals every 2s;
 // the worker merges per-tab and owns join/leave state. Fixes the split-frame case
 // (video/controls in a same-origin subframe whose URL fails inMeetingPath — neither
 // frame could fire JOIN alone; this made the extension trigger never fire on Meet).
 // Debug tap (window.__meetilyLog/__meetilyTick/__meetilyCensus) kept.
 (() => {
+  if (window.__punditMeetingSensorInstalled) return;
+  window.__punditMeetingSensorInstalled = true;
   // ---- debug mode ------------------------------------------------------------
   let DEBUG = false;
   const dbgLog = [];
@@ -141,7 +143,7 @@
 
   const LEAVE_RE = /\b(leave|hang\s?up|end\s+call|end\s+the\s+call)\b/i;
 
-  // Label-based leave detection (v1.3.2): field census 2026-10-02 10:55 proved the
+  // Label-based leave detection (v1.4.0.2): field census 2026-10-02 10:55 proved the
   // in-call Meet DOM carries NO attr our selectors key on (no data-call-exit-id,
   // no data-tooltip="Leave") while button LABELS are fully populated. Scan labels.
   function leaveLabelHits() {
@@ -243,7 +245,7 @@
     tick.lastSentAt = nowMs;
     const g = gather();
     // Beacon diagnostics: label hits make leave-detection truth visible in the log
-    // (no more blind selector guessing — v1.3.2 field finding).
+    // (no more blind selector guessing — v1.4.0.2 field finding).
     dbg(`beacon pathOk=${g.pathOk} leave=${g.joined} media=${g.media} lobby=${g.lobby} top=${g.isTop}${g.labelHits.length ? ` labels=[${g.labelHits.join(' / ')}]` : ''} (probe: light=${probeState.lightMatches} vis=${probeState.visibleMatches} shadow=${probeState.shadowRoots}r/${probeState.shadowMatches}m "${probeState.sampleLabel}")`);
     // Census while a meeting URL is open but this frame shows no in-call signal —
     // including from subframes, so the worker log sees what each frame contains.
@@ -271,7 +273,7 @@
     } catch (_) {}
   }
   window.__meetilyTick = tick;
-  dbg(`content script v1.3 loaded on ${location.hostname} fr${window.top === window ? 'TOP' : 'SUB'} (platform=${platform()})`);
+  dbg(`content script v1.4.0 loaded on ${location.hostname} fr${window.top === window ? 'TOP' : 'SUB'} (platform=${platform()})`);
   sendDebugTick('script-loaded', { url: location.href, title: document.title });
 
   // DevTools helpers for bug reports:
@@ -357,9 +359,9 @@
   });
 
   // Tell the worker this frame is going away (worker watches chrome.tabs too).
-  window.addEventListener('beforeunload', () => {
-    try { chrome.runtime.sendMessage({ kind: 'DEBUG_TICK', label: 'frame-unloading', url: location.href }); } catch (_) {}
+  window.addEventListener('pagehide', () => {
+    try { chrome.runtime.sendMessage({ kind: 'FRAME_GONE', label: 'frame-unloading', url: location.href }); } catch (_) {}
   });
 
-  console.log('[Pund-IT Meeting Assistant Auto-Record] content script v1.3 active on', location.hostname, window.top === window ? '(top frame)' : '(subframe)');
+  console.log('[Pund-IT Meeting Assistant Auto-Record] content script v1.4.0 active on', location.hostname, window.top === window ? '(top frame)' : '(subframe)');
 })();
