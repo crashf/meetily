@@ -758,6 +758,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       if(t.frames.get(frameId)?.documentId && t.frames.get(frameId).documentId!==sender.documentId)return;
       t.frames.delete(frameId);
       if(![...t.frames.values()].some(s=>s.joined||(s.media&&!s.lobby))){t.frameGoneAt=Date.now();t.offSince=t.frameGoneAt;}
+      await persistTabs();
       await recomputeTab(tabId,t);
     }).catch(e=>dbg(`frame removal failed: ${e}`));
     return;
@@ -802,14 +803,20 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 if(chrome.webNavigation?.onCommitted)chrome.webNavigation.onCommitted.addListener(details=>{
- const tabId=details.tabId,frameId=details.frameId??0;
- departureEpochs.set(tabId,(departureEpochs.get(tabId)||0)+1);
- sensorInvocations.delete(`${tabId}:${frameId}`);
- const t=tabSensors.get(tabId);if(!t)return;
- if(frameId===0)t.frames.clear();else t.frames.delete(frameId);
- if(![...t.frames.values()].some(s=>s.joined||(s.media&&!s.lobby))){t.frameGoneAt=Date.now();t.offSince=t.frameGoneAt;}
- t.meetingSince=0;t.lastJoinEvidence=0;t.joinLogged=false;
- void persistTabs().catch(e=>dbg(`commit persistence failed: ${e}`));
+ const tabId=details.tabId,frameId=details.frameId??0,at=Date.now();
+ const epoch=(departureEpochs.get(tabId)||0)+1;
+ departureEpochs.set(tabId,epoch);sensorInvocations.delete(`${tabId}:${frameId}`);
+ const invalidate=()=>{
+  if(departureEpochs.get(tabId)!==epoch)return;
+  const t=tabSensors.get(tabId);if(!t)return;
+  const signal=t.frames.get(frameId);
+  if(signal && signal.at>at)return;
+  if(frameId===0)t.frames.clear();else t.frames.delete(frameId);
+  if(![...t.frames.values()].some(s=>s.joined||(s.media&&!s.lobby))){t.frameGoneAt=at;t.offSince=at;}
+  t.meetingSince=0;t.lastJoinEvidence=0;t.joinLogged=false;
+  void persistTabs().catch(e=>dbg(`commit persistence failed: ${e}`));
+ };
+ invalidate();void bootReady.then(invalidate).catch(e=>dbg(`commit boot reconciliation failed: ${e}`));
 });
 
 // ---- heartbeat alarm (keeps worker alive + flows through) --------------------

@@ -117,6 +117,7 @@ export function useRecordingStart(
 
   // Handle manual recording start (from button click)
   const handleRecordingStart = useCallback(async () => {
+    window.dispatchEvent(new Event('recording-start-intent'));
     if (isStartingRef.current) {
       console.log('handleRecordingStart ignored - start already in progress');
       return;
