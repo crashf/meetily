@@ -364,7 +364,6 @@ async function handleSensor(msg, sender) {
   const tabId=sender.tab?.id;if(tabId===null || tabId===undefined)return;
   const frameId=sender.frameId??0;
   const sensorKey=`${tabId}:${frameId}`, invocation={documentId:sender.documentId||null,sequence:++sensorSequence}, departure=departureEpochs.get(tabId)||0;
-  const previousInvocation=sensorInvocations.get(sensorKey);
   // Unvalidated work must never supersede accepted current-document evidence.
   await bootReady;
   if(degraded || !(await validateOwnerPairing()))return;
@@ -800,6 +799,15 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       await relinquish(tabId, t, 'Left meeting URL', true);
     } else await persistTabs();
   }
+});
+
+if(chrome.webNavigation?.onCommitted)chrome.webNavigation.onCommitted.addListener(details=>{
+ const tabId=details.tabId,frameId=details.frameId??0;
+ departureEpochs.set(tabId,(departureEpochs.get(tabId)||0)+1);
+ sensorInvocations.delete(`${tabId}:${frameId}`);
+ const t=tabSensors.get(tabId);if(!t)return;
+ if(frameId===0)t.frames.clear();else t.frames.delete(frameId);
+ t.meetingSince=0;t.lastJoinEvidence=0;t.joinLogged=false;
 });
 
 // ---- heartbeat alarm (keeps worker alive + flows through) --------------------

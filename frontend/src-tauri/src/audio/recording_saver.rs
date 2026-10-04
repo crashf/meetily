@@ -276,6 +276,7 @@ impl RecordingSaver {
                     if let Some(saver_arc) = &incremental_saver_arc {
                         let saver=saver_arc.clone();
                         let written=tokio::task::spawn_blocking(move || saver.blocking_lock().add_chunk(chunk).map_err(|e|e.to_string())).await;
+                        if written.is_err(){panic!("audio checkpoint worker lost an accepted chunk");}
                         if let Err(e) = written.map_err(|e|e.to_string()).and_then(|r|r) {
                             error!("Failed to add chunk to incremental saver: {}", e);
                             accumulation_error = Some(e.to_string());
@@ -558,7 +559,8 @@ impl RecordingSaver {
         self.persist_recovery_transcripts().await?;
         if !should_save_audio {
             info!("⚠️  No audio saver initialized (auto-save was disabled) - skipping audio finalization");
-            info!("✅ Transcripts and metadata already saved incrementally");
+            if let Some(metadata)=self.metadata.as_mut(){metadata.status="completed".into();metadata.completed_at=Some(chrono::Utc::now().to_rfc3339());metadata.duration_seconds=recording_duration;}
+            self.persist_recovery_transcripts().await?;
             return Ok(None);
         }
 

@@ -158,6 +158,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       if (result !== true) {
         setIsProcessing(false);
         // No post-processing callback for recovered/no-op completion.
+        window.dispatchEvent(new Event('recording-no-save-reconcile'));
         const active=await invoke<boolean>('is_recording').catch(()=>null);
         if(active!==null && latestState.current.status===RecordingStatus.STOPPING)latestState.current.setStatus(active?RecordingStatus.RECORDING:RecordingStatus.IDLE);
         window.dispatchEvent(new Event('recording-recovery-refresh'));
