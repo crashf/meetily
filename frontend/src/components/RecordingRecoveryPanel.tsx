@@ -10,20 +10,28 @@ export function RecordingRecoveryPanel() {
   const uiEpoch=useRef(0);
   const knownGeneration=useRef<number|null>(null);
   const refreshSequence=useRef(0);
+  const pendingReconciliation=useRef<{generation:number,epoch:number}|null>(null);
   const refreshRef=useRef<()=>void>(()=>{});
   const [generation,setGeneration]=useState<number|null>(null);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
   useEffect(()=>{
     let live=true;
-    const refresh=()=>{const sequence=++refreshSequence.current;invoke<number|null>('recording_recovery_status').then(g=>{if(live&&sequence===refreshSequence.current){knownGeneration.current=g;setGeneration(g)}}).catch(()=>{})};
+    const reconcile=async()=>{
+      const pending=pendingReconciliation.current;if(!pending)return;
+      try {const active=await invoke<boolean>('is_recording');
+        if(pending!==pendingReconciliation.current)return;
+        if(pending.epoch!==uiEpoch.current || active){pendingReconciliation.current=null;return;}
+        if(![RecordingStatus.STARTING,RecordingStatus.SAVING,RecordingStatus.PROCESSING_TRANSCRIPTS].includes(latest.current.status)){latest.current.setStatus(RecordingStatus.IDLE);pendingReconciliation.current=null;setGeneration(null);}
+      }catch{ /* retry confirmed completion reconciliation on next refresh */ }
+    };
+    const refresh=()=>{const sequence=++refreshSequence.current;invoke<number|null>('recording_recovery_status').then(g=>{if(live&&sequence===refreshSequence.current){if(g!==null){knownGeneration.current=g;setGeneration(g)}else if(!pendingReconciliation.current)setGeneration(null);reconcile();}}).catch(()=>{})};
     refreshRef.current=refresh;
     const starts=listen('recording-started',()=>{uiEpoch.current++});
     const subscription=listen<{native_generation:number}>('recording-recovery-complete',async(event)=>{
       if(knownGeneration.current!==event.payload.native_generation)return;
-      const epoch=uiEpoch.current;
-      const active=await invoke<boolean>('is_recording').catch(()=>true);
-      if(!active && epoch===uiEpoch.current && ![RecordingStatus.STARTING,RecordingStatus.SAVING,RecordingStatus.PROCESSING_TRANSCRIPTS].includes(latest.current.status))latest.current.setStatus(RecordingStatus.IDLE);
+      pendingReconciliation.current={generation:event.payload.native_generation,epoch:uiEpoch.current};
+      await reconcile();
       refresh();
     });
     refresh();const timer=setInterval(refresh,2000);window.addEventListener('recording-recovery-refresh',refresh);

@@ -174,7 +174,7 @@ let degraded = false;
 let controlLoaded = false;
 const sensorInvocations = new Map();
 let sensorSequence=0;
-let departureEpoch=0;
+const departureEpochs=new Map();
 let unreadableStopIntent = false;
 let controlTail = Promise.resolve();
 let activeStartId = null;
@@ -363,7 +363,7 @@ async function recomputeTab(tabId, t) {
 async function handleSensor(msg, sender) {
   const tabId=sender.tab?.id;if(tabId===null || tabId===undefined)return;
   const frameId=sender.frameId??0;
-  const sensorKey=`${tabId}:${frameId}`, invocation={documentId:sender.documentId||null,sequence:++sensorSequence}, departure=departureEpoch;
+  const sensorKey=`${tabId}:${frameId}`, invocation={documentId:sender.documentId||null,sequence:++sensorSequence}, departure=departureEpochs.get(tabId)||0;
   const previousInvocation=sensorInvocations.get(sensorKey);
   // Unvalidated work must never supersede accepted current-document evidence.
   await bootReady;
@@ -373,7 +373,7 @@ async function handleSensor(msg, sender) {
     try { const current = await chrome.webNavigation.getFrame({tabId, frameId}); if (!current || current.documentId !== sender.documentId) return; }
     catch (_) { return; } // unknown document must not replace current evidence
   }
-  if(departure!==departureEpoch)return;
+  if(departure!==(departureEpochs.get(tabId)||0))return;
   const accepted=sensorInvocations.get(sensorKey);
   if(accepted && accepted.sequence>invocation.sequence)return;
   sensorInvocations.set(sensorKey,invocation);
@@ -747,10 +747,10 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     return;
   }
   if (msg.kind === 'FRAME_GONE') {
-    departureEpoch++;
     const tabId=sender.tab?.id, frameId=sender.frameId??0, key=`${tabId}:${frameId}`;
     const signal=tabSensors.get(tabId)?.frames.get(frameId), pending=sensorInvocations.get(key);
     if ((signal?.documentId && signal.documentId!==sender.documentId) || (!signal && pending?.documentId && pending.documentId!==sender.documentId)) return;
+    departureEpochs.set(tabId,(departureEpochs.get(tabId)||0)+1);
     if(!pending?.documentId || pending.documentId===sender.documentId)sensorInvocations.delete(key); // unique object tokens prevent old work becoming current again
     const departed=tabSensors.get(tabId);
     if(departed)departed.frames.delete(frameId);
@@ -777,7 +777,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 
 // ---- tab lifecycle ----------------------------------------------------------
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  departureEpoch++;
+  departureEpochs.set(tabId,(departureEpochs.get(tabId)||0)+1);
   for(const key of sensorInvocations.keys())if(key.startsWith(`${tabId}:`))sensorInvocations.delete(key);
   await bootReady;
   const t = tabSensors.get(tabId);
@@ -787,7 +787,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 // Tab navigated: if the top URL left the meeting domain, sensors die naturally
 // (no more beacons) — but handle the common case immediately.
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if(changeInfo.url)departureEpoch++;
+  if(changeInfo.url)departureEpochs.set(tabId,(departureEpochs.get(tabId)||0)+1);
   if(changeInfo.url)for(const key of sensorInvocations.keys())if(key.startsWith(`${tabId}:`))sensorInvocations.delete(key);
   await bootReady;
   const url = changeInfo.url || tab?.url;
